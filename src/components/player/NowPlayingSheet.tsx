@@ -159,21 +159,24 @@ export function NowPlayingSheet() {
           cambiar de canción, así que el conjunto no salta y nunca hay scroll. */}
       <div className="relative mx-auto grid h-full w-full max-w-[1600px] grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(280px,2fr)]">
       <section aria-label="Reproductor" className="relative flex min-h-0 min-w-0 flex-col pt-[env(safe-area-inset-top)] pb-2 lg:pr-4">
-        <header className="flex w-full shrink-0 items-center justify-between gap-2 p-4 lg:justify-normal lg:gap-1 lg:px-2 lg:py-2">
-          {/* Izquierda: minimizar (en el PC, del ancho de los botones de la derecha, para que el título quede centrado);
-              centro (PC): de dónde suena; derecha: «Canción | Letra» y ⋮. Minimizar: deslizar hacia abajo o, en el
-              PC, la tecla Esc. El selector va aquí arriba para que la letra tenga todo el alto del centro. */}
-          <div className="shrink-0 lg:w-20">
+        {/* Tres columnas, las de los lados del mismo ancho: el centro queda siempre al centro de la pantalla, sin
+            importar los botones. Izquierda: minimizar (también deslizar hacia abajo o, en el PC, la tecla Esc); centro:
+            «Canción | Letra» (en el PC, debajo de dónde suena); derecha: ⋮. El selector va aquí arriba para que la
+            letra tenga todo el alto del centro. */}
+        <header className="grid w-full shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-2 p-4 lg:px-2 lg:py-2">
+          <div className="justify-self-start">
             <IconButton label="Minimizar reproductor" onClick={close} className="text-white">
               <ChevronDown className="size-6" aria-hidden="true" />
             </IconButton>
           </div>
-          <div className="hidden min-w-0 flex-1 text-center lg:block">
-            <p className="text-[11px] font-semibold tracking-wider text-white/70 uppercase">Sonando desde</p>
-            <p className="truncate text-sm font-bold">{contextName ?? 'Tu música'}</p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex flex-col items-center gap-1">
+            <div className="hidden max-w-64 text-center lg:block">
+              <p className="text-[11px] font-semibold tracking-wider text-white/70 uppercase">Sonando desde</p>
+              <p className="truncate text-sm font-bold">{contextName ?? 'Tu música'}</p>
+            </div>
             {!hideViewToggle && <ViewToggle view={view} />}
+          </div>
+          <div className="justify-self-end">
             <TrackMenu track={current} />
           </div>
         </header>

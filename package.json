@@ -1,7 +1,7 @@
 {
   "name": "soundblue",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,10 +11,7 @@
     "preview": "vite preview",
     "iconos": "node scripts/iconos.ts",
     "worker:dev": "npx --yes wrangler@4.149.0 dev --config worker/wrangler.jsonc",
-    "worker:publicar": "npx --yes wrangler@4.149.0 deploy --config worker/wrangler.jsonc",
-    "worker:jam:dev": "npx --yes wrangler@4.149.0 dev --config worker/jam.wrangler.jsonc --port 8787",
-    "worker:jam:publicar": "npx --yes wrangler@4.149.0 deploy --config worker/jam.wrangler.jsonc",
-    "worker:jam:staging": "npx --yes wrangler@4.149.0 deploy --config worker/jam.staging.wrangler.jsonc"
+    "worker:publicar": "npx --yes wrangler@4.149.0 deploy --config worker/wrangler.jsonc"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",

@@ -6,6 +6,8 @@ const KEY = 'soundblue:gustos'
 const STARTERS_KEY = 'soundblue:artistas-iniciales'
 const STARTERS_MS = 7 * 24 * 3600 * 1000
 
+export const SUGGESTED_ARTISTS = 3 // como en Spotify: con 3 o más artistas las recomendaciones salen mejor
+
 export interface Tastes {
   artists: YtmCard[]
   skipped?: boolean // tocó «Omitir»: no se vuelve a preguntar al abrir

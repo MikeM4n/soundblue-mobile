@@ -1,6 +1,7 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Route, Routes, useLocation, type Location } from 'react-router'
 import { genreIndex } from './data/genreIndex'
+import { hasSeenOnboarding } from './lib/onboarding'
 import { startUpdateChecks } from './lib/updates'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
@@ -12,6 +13,7 @@ const Help = lazy(() => import('./pages/Help').then((m) => ({ default: m.Help })
 const ModePage = lazy(() => import('./pages/Mode').then((m) => ({ default: m.ModePage })))
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
 const Library = lazy(() => import('./pages/Library').then((m) => ({ default: m.Library })))
+const Onboarding = lazy(() => import('./pages/Onboarding').then((m) => ({ default: m.Onboarding })))
 const Queue = lazy(() => import('./pages/Queue').then((m) => ({ default: m.Queue })))
 const Search = lazy(() => import('./pages/Search').then((m) => ({ default: m.Search })))
 const SongPage = lazy(() => import('./pages/Song').then((m) => ({ default: m.SongPage })))
@@ -20,6 +22,7 @@ const YtmPage = lazy(() => import('./pages/YtmPage').then((m) => ({ default: m.Y
 
 export default function App() {
   const location = useLocation()
+  const [onboarded, setOnboarded] = useState(hasSeenOnboarding)
   usePlayerShortcuts()
   useEffect(() => {
     if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
@@ -27,6 +30,14 @@ export default function App() {
     const timer = window.setTimeout(() => void genreIndex(), 4000)
     return () => window.clearTimeout(timer)
   }, [])
+  // La primera vez, la bienvenida (artistas, ritmos y cómo importar) va antes que Inicio y que todo lo demás.
+  if (!onboarded) {
+    return (
+      <Suspense fallback={null}>
+        <Onboarding onDone={() => setOnboarded(true)} />
+      </Suspense>
+    )
+  }
   // «Sonando ahora» (/reproduciendo) se abre ENCIMA de la página donde estabas: esa sigue dibujada debajo.
   const background = (location.state as { background?: Location } | null)?.background
   const pageLocation = location.pathname === '/reproduciendo' ? (background ?? { ...location, pathname: '/' }) : location
