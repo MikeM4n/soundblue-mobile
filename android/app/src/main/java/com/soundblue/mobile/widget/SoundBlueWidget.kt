@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,6 +42,8 @@ import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
+import androidx.glance.layout.fillMaxWidth
+import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
 import androidx.glance.layout.width
@@ -75,18 +78,22 @@ private val DIMMED = Color(0x59FFFFFF) // controles apagados (nada cargado)
 private val PLAY_ICON = Color(0xFF0F0F0F)
 private val LIKED = Color(0xFF4169E1) // azul rey del logo: el corazón de Tus me gusta, como en la app
 
-// Angosto: ⏯, ⏭ y ♥. Desde 310 dp de ancho también ⏮.
-private val COMPACT = DpSize(250.dp, 56.dp)
-private val WIDE = DpSize(310.dp, 56.dp)
+// Desde 90 dp de alto (una fila del inicio con el teléfono en vertical ya mide unos 100 dp): título y artista arriba y
+// ⏮ ⏯ ⏭ ♥ centrados debajo, más grandes. Más bajo (p. ej. con el teléfono acostado): todo en una fila, y si es angosto,
+// sin ⏮. Desde 310 dp de ancho, los botones van más separados.
+private val ROW = DpSize(250.dp, 56.dp)
+private val ROW_WIDE = DpSize(310.dp, 56.dp)
+private val STACKED = DpSize(250.dp, 90.dp)
+private val STACKED_WIDE = DpSize(310.dp, 90.dp)
 
 /**
- * Widget de SoundBlue (Jetpack Glance), al estilo del de YouTube Music: a la izquierda la carátula, al centro título y
- * artista (una línea cada uno), a la derecha ⏮ ⏯ ⏭ ♥. Los botones le mandan la orden a PlaybackService con un
+ * Widget de SoundBlue (Jetpack Glance), al estilo del de YouTube Music: a la izquierda la carátula y a la derecha título
+ * y artista con ⏮ ⏯ ⏭ ♥ debajo (en una fila si no hay alto). Los botones le mandan la orden a PlaybackService con un
  * MediaController (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene
  * nada cargado (p. ej. cerraste la app), se ve la última canción que sonó y ▶ la vuelve a poner a sonar sin abrir la app.
  */
 class SoundBlueWidget : GlanceAppWidget() {
-    override val sizeMode = SizeMode.Responsive(setOf(COMPACT, WIDE))
+    override val sizeMode = SizeMode.Responsive(setOf(ROW, ROW_WIDE, STACKED, STACKED_WIDE))
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         SoundBlueWidgetState.restore(context) // proceso nuevo: la última canción guardada
@@ -103,64 +110,102 @@ class SoundBlueWidgetReceiver : GlanceAppWidgetReceiver() {
 
 @Composable
 private fun WidgetContent(snapshot: WidgetSnapshot) {
-    val context = LocalContext.current
+    val size = LocalSize.current
+    val wide = size.width >= ROW_WIDE.width
     val openApp = actionStartActivity<MainActivity>()
-    val wide = LocalSize.current.width >= WIDE.width
-    val hasSong = snapshot.title != null
-    Row(
-        modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(start = 8.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    if (size.height >= STACKED.height) {
+        // Carátula a la izquierda; a la derecha, la canción arriba y los botones centrados debajo.
         Row(
-            modifier = GlanceModifier.defaultWeight().fillMaxHeight().clickable(openApp),
+            modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Artwork(snapshot.artwork)
+            Artwork(snapshot.artwork, GlanceModifier.clickable(openApp))
             Spacer(GlanceModifier.width(10.dp))
             Column(modifier = GlanceModifier.defaultWeight()) {
-                Text(
-                    text = snapshot.title ?: "SoundBlue",
-                    style = TextStyle(color = ColorProvider(TEXT), fontSize = 14.sp, fontWeight = FontWeight.Bold),
-                    maxLines = 1,
-                )
-                Text(
-                    text = if (hasSong) snapshot.artist.orEmpty() else "Elige algo para escuchar",
-                    style = TextStyle(color = ColorProvider(TEXT_SECONDARY), fontSize = 12.sp),
-                    maxLines = 1,
-                )
+                SongText(snapshot, GlanceModifier.fillMaxWidth().clickable(openApp))
+                Spacer(GlanceModifier.height(2.dp))
+                Row(
+                    modifier = GlanceModifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // 4 × 44 dp caben justo en lo que queda de 250 dp; más ancho, con aire entre uno y otro.
+                    Controls(snapshot, showPrevious = true, button = 44.dp, icon = 28.dp, gap = if (wide) 8.dp else 0.dp)
+                }
             }
         }
-        val heart = if (snapshot.liked) R.drawable.ic_widget_favorite else R.drawable.ic_widget_favorite_border
-        val heartLabel = if (snapshot.liked) "Quitar de Tus me gusta" else "Me gusta"
-        if (snapshot.active) {
-            if (wide) ControlIcon(R.drawable.ic_widget_previous, "Anterior", actionRunCallback<PreviousAction>())
-            PlayButton(snapshot.playing, actionRunCallback<PlayPauseAction>())
-            ControlIcon(R.drawable.ic_widget_next, "Siguiente", actionRunCallback<NextAction>())
-            if (snapshot.likeable) {
-                ControlIcon(heart, heartLabel, actionRunCallback<ToggleLikeAction>(), tint = if (snapshot.liked) LIKED else TEXT)
-            } else {
-                ControlIcon(heart, heartLabel, onClick = null, tint = DIMMED) // Tus me gusta viven en la app: está cerrada
+    } else {
+        Row(
+            modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(start = 8.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = GlanceModifier.defaultWeight().fillMaxHeight().clickable(openApp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Artwork(snapshot.artwork)
+                Spacer(GlanceModifier.width(10.dp))
+                SongText(snapshot, GlanceModifier.defaultWeight())
             }
-        } else {
-            // El reproductor no tiene nada cargado: ▶ vuelve a poner a sonar la última canción (y su cola) sin abrir la app.
-            // Android arranca PlaybackService en primer plano: lo permite porque es un toque en el widget.
-            val resume = if (hasSong) {
-                val intent = Intent(context, PlaybackService::class.java).setAction(PlaybackService.ACTION_RESUME_FROM_WIDGET)
-                actionStartService(intent, isForegroundService = true)
-            } else {
-                openApp // nunca ha sonado nada: a elegir música
-            }
-            if (wide) ControlIcon(R.drawable.ic_widget_previous, "Anterior", onClick = null, tint = DIMMED)
-            PlayButton(playing = false, onClick = resume)
-            ControlIcon(R.drawable.ic_widget_next, "Siguiente", onClick = null, tint = DIMMED)
-            ControlIcon(heart, heartLabel, onClick = null, tint = DIMMED)
+            Controls(snapshot, showPrevious = wide, button = 40.dp, icon = 24.dp, gap = 0.dp)
         }
     }
 }
 
+/** Título y artista, una línea cada uno. */
 @Composable
-private fun Artwork(artwork: Bitmap?) {
-    val modifier = GlanceModifier.size(48.dp).cornerRadius(6.dp)
+private fun SongText(snapshot: WidgetSnapshot, modifier: GlanceModifier) {
+    Column(modifier = modifier) {
+        Text(
+            text = snapshot.title ?: "SoundBlue",
+            style = TextStyle(color = ColorProvider(TEXT), fontSize = 14.sp, fontWeight = FontWeight.Bold),
+            maxLines = 1,
+        )
+        Text(
+            text = if (snapshot.title != null) snapshot.artist.orEmpty() else "Elige algo para escuchar",
+            style = TextStyle(color = ColorProvider(TEXT_SECONDARY), fontSize = 12.sp),
+            maxLines = 1,
+        )
+    }
+}
+
+/** ⏮ ⏯ ⏭ ♥, de `button` dp cada uno (con íconos de `icon` dp) y `gap` dp entre ellos. */
+@Composable
+private fun Controls(snapshot: WidgetSnapshot, showPrevious: Boolean, button: Dp, icon: Dp, gap: Dp) {
+    val context = LocalContext.current
+    val heart = if (snapshot.liked) R.drawable.ic_widget_favorite else R.drawable.ic_widget_favorite_border
+    val heartLabel = if (snapshot.liked) "Quitar de Tus me gusta" else "Me gusta"
+    // Sin nada cargado en el reproductor, ▶ vuelve a poner a sonar la última canción (y su cola) sin abrir la app: Android
+    // arranca PlaybackService en primer plano porque es un toque en el widget. Los demás se ven apagados.
+    val play = when {
+        snapshot.active -> actionRunCallback<PlayPauseAction>()
+        snapshot.title != null -> {
+            val intent = Intent(context, PlaybackService::class.java).setAction(PlaybackService.ACTION_RESUME_FROM_WIDGET)
+            actionStartService(intent, isForegroundService = true)
+        }
+        else -> actionStartActivity<MainActivity>() // nunca ha sonado nada: a elegir música
+    }
+    if (showPrevious) {
+        ControlIcon(R.drawable.ic_widget_previous, "Anterior", if (snapshot.active) actionRunCallback<PreviousAction>() else null, button, icon)
+        Gap(gap)
+    }
+    PlayButton(snapshot.active && snapshot.playing, play, button, icon)
+    Gap(gap)
+    ControlIcon(R.drawable.ic_widget_next, "Siguiente", if (snapshot.active) actionRunCallback<NextAction>() else null, button, icon)
+    Gap(gap)
+    // ♥ solo con la app abierta: Tus me gusta viven en ella.
+    val like = if (snapshot.active && snapshot.likeable) actionRunCallback<ToggleLikeAction>() else null
+    ControlIcon(heart, heartLabel, like, button, icon, tint = if (snapshot.liked) LIKED else TEXT)
+}
+
+@Composable
+private fun Gap(width: Dp) {
+    if (width > 0.dp) Spacer(GlanceModifier.width(width))
+}
+
+@Composable
+private fun Artwork(artwork: Bitmap?, extra: GlanceModifier = GlanceModifier) {
+    val modifier = extra.size(48.dp).cornerRadius(6.dp)
     if (artwork != null) {
         Image(ImageProvider(artwork), contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop)
         return
@@ -178,28 +223,29 @@ private fun Artwork(artwork: Bitmap?) {
 
 /** Un control. Sin `onClick` se ve apagado y no hace nada. */
 @Composable
-private fun ControlIcon(icon: Int, label: String, onClick: Action?, tint: Color = TEXT) {
-    val base = GlanceModifier.size(40.dp).cornerRadius(20.dp)
+private fun ControlIcon(icon: Int, label: String, onClick: Action?, button: Dp, iconSize: Dp, tint: Color = TEXT) {
+    val base = GlanceModifier.size(button).cornerRadius(button / 2)
     Box(modifier = if (onClick != null) base.clickable(onClick) else base, contentAlignment = Alignment.Center) {
         Image(
             ImageProvider(icon),
             contentDescription = label,
-            modifier = GlanceModifier.size(24.dp),
-            colorFilter = ColorFilter.tint(ColorProvider(tint)),
+            modifier = GlanceModifier.size(iconSize),
+            colorFilter = ColorFilter.tint(ColorProvider(if (onClick != null) tint else DIMMED)),
         )
     }
 }
 
+/** ⏯ en el círculo blanco. */
 @Composable
-private fun PlayButton(playing: Boolean, onClick: Action) {
+private fun PlayButton(playing: Boolean, onClick: Action, button: Dp, iconSize: Dp) {
     Box(
-        modifier = GlanceModifier.size(40.dp).background(TEXT).cornerRadius(20.dp).clickable(onClick),
+        modifier = GlanceModifier.size(button).background(TEXT).cornerRadius(button / 2).clickable(onClick),
         contentAlignment = Alignment.Center,
     ) {
         Image(
             ImageProvider(if (playing) R.drawable.ic_widget_pause else R.drawable.ic_widget_play),
             contentDescription = if (playing) "Pausar" else "Reproducir",
-            modifier = GlanceModifier.size(24.dp),
+            modifier = GlanceModifier.size(iconSize),
             colorFilter = ColorFilter.tint(ColorProvider(PLAY_ICON)),
         )
     }

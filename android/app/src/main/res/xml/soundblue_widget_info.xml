@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Widget de SoundBlue (widget/SoundBlueWidget.kt): una fila de 4×1 que se puede ensanchar. Se actualiza cuando cambia
-     lo que suena (PlaybackService), no por tiempo. -->
+<!-- Widget de SoundBlue (widget/SoundBlueWidget.kt): 4×1, que se puede ensanchar y, si en tu inicio una fila es baja, hacer
+     más alto (con 90 dp de alto los botones van debajo del título). Desde 250 dp de ancho, para que quepan los 4 botones.
+     Se actualiza cuando cambia lo que suena (PlaybackService), no por tiempo. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/widget_description"
     android:initialLayout="@layout/glance_default_loading_layout"
     android:minWidth="250dp"
     android:minHeight="56dp"
-    android:minResizeWidth="200dp"
-    android:resizeMode="horizontal"
+    android:minResizeWidth="250dp"
+    android:resizeMode="horizontal|vertical"
     android:targetCellWidth="4"
     android:targetCellHeight="1"
     android:updatePeriodMillis="0"
