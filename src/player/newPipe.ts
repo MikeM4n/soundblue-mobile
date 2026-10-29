@@ -1,4 +1,4 @@
-import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { registerPlugin } from '@capacitor/core'
 
 export interface NewPipeVideo {
   id: string
@@ -19,8 +19,6 @@ interface NewPipePlugin {
     artwork: string
     mimeType: string
   }>
-  addListener(eventName: 'mediaNext', listener: () => void): Promise<PluginListenerHandle>
-  addListener(eventName: 'mediaPrevious', listener: () => void): Promise<PluginListenerHandle>
 }
 
 export const NewPipe = registerPlugin<NewPipePlugin>('NewPipe')

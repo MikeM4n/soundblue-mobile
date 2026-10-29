@@ -18,9 +18,12 @@ const youtubeMusicProxy: Record<string, ProxyOptions> = {
   },
 }
 
-// Versión que se ve en el registro de diagnóstico (Ayuda) y en version.json: el commit (GitHub Actions lo da en
-// GITHUB_SHA) y la hora de compilación, para saber con qué versión se hizo cada prueba en el teléfono.
-const APP_VERSION = `${(process.env.GITHUB_SHA ?? 'local').slice(0, 7)} · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`
+// Versión que se ve en Ajustes y en version.json: la de package.json (la misma del APK, ver android/app/build.gradle),
+// el commit si compila GitHub Actions (GITHUB_SHA) y la hora de compilación, para saber con qué versión se hizo cada
+// prueba en el teléfono.
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+const BUILT_AT = `${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`
+const APP_VERSION = [version, process.env.GITHUB_SHA?.slice(0, 7), BUILT_AT].filter(Boolean).join(' · ')
 
 /**
  * Completa public/sw.js al compilar: le pasa la lista de archivos generados (con su hash)

@@ -1,4 +1,4 @@
-// Android metadata and playback controls are owned by the MediaGrid Media3 session.
+// Android metadata and playback controls are owned by the native PlaybackService (Media3 session).
 // Keep the standard browser Media Session API for desktop browsers and PWAs.
 import { sizedArtwork, thumbnail, type Status, type Track } from './types'
 

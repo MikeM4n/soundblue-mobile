@@ -9,7 +9,6 @@ import android.webkit.WebResourceResponse;
 import android.os.Bundle;
 import android.os.Build;
 import java.io.ByteArrayInputStream;
-import org.schabi.newpipe.extractor.NewPipe;
 
 public class MainActivity extends BridgeActivity {
     private static final String VISIBILITY_SCRIPT = "(function(){"
@@ -21,7 +20,8 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NewPipePlugin.class);
-        NewPipe.init(new NewPipeDownloader());
+        registerPlugin(PlaybackPlugin.class);
+        StreamResolver.init();
         super.onCreate(savedInstanceState);
         WebView webView = getBridge() == null ? null : getBridge().getWebView();
         

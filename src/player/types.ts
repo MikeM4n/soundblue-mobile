@@ -19,30 +19,45 @@ export type Repeat = 'off' | 'all' | 'one'
  */
 export type Status = 'idle' | 'standby' | 'loading' | 'playing' | 'paused' | 'buffering' | 'ended' | 'error'
 
-/** Estados que reportan los reproductores, ya traducidos. */
-export type BackendState = 'unstarted' | 'cued' | 'playing' | 'paused' | 'buffering' | 'ended'
+/** Estados que reportan los reproductores, ya traducidos. 'error': falló la canción (el detalle llega en onFailed). */
+export type BackendState = 'unstarted' | 'cued' | 'playing' | 'paused' | 'buffering' | 'ended' | 'error'
 
-export interface LoadOptions {
+/** Las vecinas de la que suena: el reproductor nativo las encadena solo, sin esperar a la app. */
+export interface Neighbors {
+  history: readonly Track[] // las que alcanza «anterior», de la más vieja a la más reciente
+  upcoming: readonly Track[] // las próximas, en el orden en que van a sonar
+  album?: string // de dónde suena (para la notificación, si la canción no trae álbum)
+}
+
+export interface LoadOptions extends Neighbors {
   autoplay: boolean
   start: number // segundos
-  track?: Track
-  album?: string
+}
+
+/** Por qué el reproductor nativo pasó a otra canción: terminó la anterior, un botón (notificación, audífonos, reloj) o falló. */
+export type TrackChange = 'auto' | 'seek' | 'failed'
+
+export interface PlaybackFailure {
+  id: string
+  message: string
+  network: boolean // sin conexión: no se salta, sigue cuando vuelva internet
+  skipped: boolean // el reproductor nativo ya pasó a la siguiente
 }
 
 export interface BackendEvents {
-  onReady(): void
   onState(state: BackendState): void
-  onError(code: number): void
-  onMediaNext?(): void
-  onMediaPrevious?(): void
+  onTrack(id: string, reason: TrackChange, state: BackendState): void
+  onFailed(failure: PlaybackFailure): void
 }
 
 /** Lo que el motor necesita de un reproductor de audio. */
 export interface MediaBackend {
-  load(id: string, options: LoadOptions): Promise<void>
+  load(track: Track, options: LoadOptions): Promise<void>
+  sync(track: Track, neighbors: Neighbors, repeatOne: boolean): void
   play(): void
   pause(): void
   seek(seconds: number): void
+  previous(): void // «anterior» con la regla de los 3 s, medida por el propio reproductor
   getTime(): number
   getDuration(): number
   setVolume(volume: number, muted: boolean): void

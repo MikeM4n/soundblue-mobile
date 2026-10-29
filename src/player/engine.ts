@@ -9,8 +9,8 @@ import { logDuplicate } from '../lib/duplicateLog'
 import { settings } from '../lib/settings'
 import { showToast } from '../ui/toast'
 import { setupMediaSession, updateMetadata, updatePlaybackState, updatePosition } from './mediaSession'
-import { isTrack, type BackendState, type MediaBackend, type Repeat, type Status, type Track } from './types'
-import { NativeAudioBackend } from './nativeAudio'
+import { isTrack, type BackendState, type MediaBackend, type Neighbors, type PlaybackFailure, type Repeat, type Status, type Track, type TrackChange } from './types'
+import { NativePlayerBackend } from './nativePlayer'
 
 const SESSION_KEY = 'soundblue:reproductor'
 const DURATIONS_KEY = 'soundblue:duraciones'
@@ -75,8 +75,13 @@ const MIN_UPCOMING = 10 // con la Fila Dinámica, en la cola siempre hay al meno
 const POOL_SIZE = 10 // «Recomendadas» y «Por Descubrir» muestran hasta 10 cada una…
 const POOL_LOW = 6 // …y se reponen (en tanda, para variar artistas) cuando les quedan menos de 6
 const SKIP_SECONDS = 30 // pasar a la siguiente antes de esto cuenta como saltada (data/history.ts)
+const MAX_FAILURES = 10 // canciones seguidas que no se pueden reproducir antes de detenerse
+// El reproductor nativo encadena solo estas canciones (aunque la app esté dormida en segundo plano).
+const NATIVE_AHEAD = 15 // próximas
+const NATIVE_BEHIND = 5 // las que ya sonaron, para «anterior» desde la notificación, los audífonos o el reloj
 
 const OFFLINE = 'Sin conexión: la música sigue en cuanto vuelva internet.'
+const SKIPPED = 'No se pudo reproducir esta canción, pasando a la siguiente'
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
 const range = (n: number) => Array.from({ length: n }, (_, i) => i)
@@ -96,7 +101,7 @@ function move<T>(list: T[], from: number, to: number) {
 }
 
 export class PlayerEngine {
-  readonly audio: NativeAudioBackend
+  readonly audio: NativePlayerBackend
   private context: Context | null = null
   private order: number[] = [] // índices de context.tracks en orden de reproducción
   private pos = -1 // posición en `order` de la canción de la lista que va sonando
@@ -136,14 +141,13 @@ export class PlayerEngine {
   private snapshot: PlayerSnapshot
 
   constructor() {
-    this.audio = new NativeAudioBackend({
-      onReady: () => this.applyVolume(),
+    this.audio = new NativePlayerBackend({
       onState: (state) => this.current && this.onBackendState(state),
-      onError: (code) => this.current && this.onBackendError(code),
-      onMediaNext: () => this.next(),
-      onMediaPrevious: () => this.prev(),
+      onTrack: (id, reason, state) => this.onNativeTrack(id, reason, state),
+      onFailed: (failure) => this.onNativeFailure(failure),
     })
     this.restore()
+    this.applyVolume() // queda guardado: se aplica al cargar la primera canción
     this.snapshot = this.buildSnapshot()
     setupMediaSession(this)
     window.addEventListener('pagehide', () => this.saveNow())
@@ -467,9 +471,15 @@ export class PlayerEngine {
     return true
   }
 
-  // Botón «anterior», como en Spotify: si la canción lleva más de 3 s, la reinicia; si no, va a la anterior.
+  // Botón «anterior», como en Spotify: si la canción lleva más de 3 s, la reinicia; si no, va a la anterior. Con la
+  // canción cargada lo decide el reproductor nativo con su propio reloj (el de aquí se congela en segundo plano) y el
+  // cambio vuelve por onNativeTrack, igual que desde la notificación, los audífonos o el reloj.
   prev() {
     if (!this.current) return
+    if (this.loadedId === this.current.id && this.status !== 'error') {
+      this.backend.previous()
+      return
+    }
     if (this.currentTime() > 3 || !this.previous()) this.seek(0)
   }
 
@@ -714,10 +724,11 @@ export class PlayerEngine {
     this.startedId = this.countedId = null
     this.duration = this.durations[track.id] ?? track.duration ?? 0
     updateMetadata(track, this.context?.name)
-    this.loadedId = track.id
     updatePlaybackState(this.status)
     this.changed()
-    this.backend.load(track.id, { autoplay, start, track, album: this.context?.name }).catch((error: unknown) => {
+    // Con sus vecinas: al terminar esta, el reproductor nativo sigue solo con la próxima (ya pre-cargada).
+    this.loadedId = track.id
+    this.backend.load(track, { autoplay, start, ...this.neighbors() }).catch((error: unknown) => {
       if (this.current !== track) return
       this.loadedId = null
       this.status = 'error'
@@ -725,6 +736,95 @@ export class PlayerEngine {
       updatePlaybackState(this.status)
       this.emit()
     })
+    this.syncNative() // «repetir una»
+  }
+
+  /**
+   * El reproductor nativo pasó a otra canción por su cuenta: terminó la anterior, se tocó «siguiente» o «anterior» en la
+   * notificación, los audífonos o el reloj, o saltó una que no se pudo reproducir. La cola de aquí se pone al día (pudo
+   * avanzar varias mientras la app dormía en segundo plano). Si el cambio lo pidió la app, ya está al día.
+   */
+  private onNativeTrack(id: string, reason: TrackChange, state: BackendState) {
+    const current = this.current
+    if (!current || current.id === id) return
+    const previous = this.peekPrevious()
+    if (reason === 'seek' && previous?.track.id === id) {
+      if (previous.fromHistory) this.history.pop()
+      if (this.fromQueue) this.queue.unshift(current) // la actual vuelve a ser la siguiente
+      this.pos = previous.pos
+      this.adopt(previous.track, previous.fromQueue, state)
+      return
+    }
+    const before = { pos: this.pos, queue: [...this.queue], history: [...this.history], fromQueue: this.fromQueue }
+    if (reason === 'auto') {
+      this.rememberDuration(true)
+      this.countListen()
+    } else if (reason === 'seek') {
+      this.noteSkip()
+    }
+    for (let step = 0; step <= NATIVE_AHEAD; step++) {
+      const target = this.peekNext()
+      if (!target) break
+      if (target.fromQueue) this.queue.shift()
+      if (step > 0 || reason !== 'failed') this.pushHistory() // la que falló no vuelve con «anterior»
+      this.pos = target.pos
+      this.current = target.track
+      this.fromQueue = target.fromQueue
+      if (target.track.id === id) {
+        this.adopt(target.track, target.fromQueue, state)
+        return
+      }
+    }
+    // No está en la cola de aquí (cambió mientras tanto): se respeta lo que suena y se le vuelve a mandar la cola.
+    this.pos = before.pos
+    this.queue = before.queue
+    this.history = before.history
+    this.current = current
+    this.fromQueue = before.fromQueue
+    const track = this.audio.trackFor(id)
+    if (!track) return
+    this.pushHistory()
+    this.adopt(track, true, state)
+  }
+
+  /** Deja como actual la que ya suena en el reproductor nativo, sin volver a cargarla. */
+  private adopt(track: Track, fromQueue: boolean, state: BackendState) {
+    this.current = track
+    this.fromQueue = fromQueue
+    this.loadedId = track.id
+    this.status = 'loading'
+    this.userPaused = false
+    this.error = null
+    this.time = 0
+    this.startedId = this.countedId = null
+    this.duration = this.durations[track.id] ?? track.duration ?? 0
+    updateMetadata(track, this.context?.name)
+    void this.extendRadio() // como playTrack: la radio sigue desde la que suena
+    this.onBackendState(state === 'playing' || state === 'paused' ? state : 'buffering')
+  }
+
+  /**
+   * Lo que el reproductor nativo encadena solo: las próximas (tu cola, la lista y, con «repetir», la lista otra vez) y las
+   * que alcanza «anterior» (lo último que sonó o, si no hay, la anterior de la lista).
+   */
+  private neighbors(): Neighbors {
+    const upcoming = this.queue.slice(0, NATIVE_AHEAD)
+    if (this.context) {
+      const rest = range(this.order.length).slice(this.pos + 1)
+      for (const position of this.repeat === 'all' ? [...rest, ...range(this.pos + 1)] : rest) {
+        if (upcoming.length >= NATIVE_AHEAD) break
+        upcoming.push(this.contextTrack(position))
+      }
+    }
+    const previous = this.peekPrevious()
+    const history = this.history.length ? this.history.slice(-NATIVE_BEHIND).map((step) => step.track) : previous ? [previous.track] : []
+    return { history, upcoming, album: this.context?.name }
+  }
+
+  /** Cada cambio de la cola (agregar, quitar, mover, la Fila Dinámica, aleatorio, repetir) llega al reproductor nativo. */
+  private syncNative() {
+    const track = this.current
+    if (track && this.loadedId === track.id) this.backend.sync(track, this.neighbors(), this.repeat === 'one')
   }
 
   private onBackendState(state: BackendState) {
@@ -733,6 +833,8 @@ export class PlayerEngine {
         this.status = 'playing'
         this.userPaused = false
         this.failures = 0
+        if (this.error === OFFLINE) this.error = null // volvió la conexión y el reproductor nativo siguió solo
+        this.resumeWhenOnline = false
         this.syncTime()
         this.startTicker()
         if (this.current && this.startedId !== this.current.id) {
@@ -755,6 +857,8 @@ export class PlayerEngine {
         return
       case 'unstarted':
         return // sigue en 'loading' hasta que YouTube empiece
+      case 'error':
+        return // el detalle llega por onNativeFailure
     }
     updatePlaybackState(this.status)
     updatePosition(this.duration, this.time)
@@ -789,14 +893,26 @@ export class PlayerEngine {
     })
   }
 
-  private onBackendError(_code: number) {
+  /**
+   * Una canción no se pudo reproducir (p. ej. NewPipe no pudo extraerla). Sin internet no se salta nada: sigue sola al
+   * volver la conexión. Si no, el reproductor nativo ya pasó a la siguiente (el cambio llega por onNativeTrack) o, si no
+   * tenía otra, se sigue desde aquí.
+   */
+  private onNativeFailure({ id, network, skipped }: PlaybackFailure) {
+    if (this.current?.id !== id) return
     this.stopTicker()
-    // Sin internet no se salta nada ni se marca como «solo en YouTube Music»: se espera a que vuelva (onOnline).
-    if (!navigator.onLine) {
+    if (network) {
       this.waitForNetwork()
       return
     }
-    this.skipFailed()
+    this.status = 'error' // así no vuelve con «anterior» (pushHistory)
+    if (!skipped) {
+      this.skipFailed()
+      return
+    }
+    this.failures++
+    showToast(SKIPPED)
+    this.emit()
   }
 
   /** Sin internet: la canción queda esperando (ninguna está guardada en el teléfono) y suena sola al volver la conexión. */
@@ -830,9 +946,9 @@ export class PlayerEngine {
   private skipFailed() {
     this.failures++
     // Si no se puede reproducir, salta a la siguiente con un aviso corto (máximo 10 seguidos).
-    if (this.failures <= 10 && this.hasNext()) {
+    if (this.failures <= MAX_FAILURES && this.hasNext()) {
       // Todo queda dentro de SoundBlue: sin enlace a la app de YouTube Music.
-      showToast('No se pudo reproducir esta canción, pasando a la siguiente')
+      showToast(SKIPPED)
       this.next()
       return
     }
@@ -970,6 +1086,7 @@ export class PlayerEngine {
 
   private changed() {
     if (this.prunePools()) void this.fillPools()
+    this.syncNative()
     this.emit()
     this.save()
   }

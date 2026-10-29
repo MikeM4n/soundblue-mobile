@@ -1,13 +1,13 @@
 {
   "name": "soundblue",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
-    "postinstall": "node scripts/patch-native-audio.mjs",
     "dev": "vite",
     "dev:red": "vite --host",
     "build": "tsc --noEmit && vite build",
+    "apk": "node scripts/android-apk.mjs",
     "preview": "vite preview",
     "iconos": "node scripts/iconos.ts",
     "worker:dev": "npx --yes wrangler@4.149.0 dev --config worker/wrangler.jsonc",
@@ -22,7 +22,6 @@
     "@capacitor/cli": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@fontsource-variable/inter": "^5.3.0",
-    "@mediagrid/capacitor-native-audio": "^3.0.0",
     "lucide-react": "^1.61.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
