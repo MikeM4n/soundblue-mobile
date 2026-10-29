@@ -160,10 +160,11 @@ export function NowPlayingSheet() {
           cambiar de canción, así que el conjunto no salta y nunca hay scroll. */}
       <div className="relative mx-auto grid h-full w-full max-w-[1600px] grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(280px,2fr)]">
       <section aria-label="Reproductor" className="relative flex min-h-0 min-w-0 flex-col pt-[env(safe-area-inset-top)] pb-2 lg:pr-4">
-        <header className="flex w-full shrink-0 items-center justify-between p-4 lg:justify-normal lg:gap-1 lg:px-2 lg:py-2">
-          {/* Izquierda vacía (del ancho de los dos botones de la derecha, para que el título quede centrado); centro: de
-              dónde suena; derecha: Jam y ⋮. Minimizar: deslizar hacia abajo o, en el PC, la tecla Esc. */}
-          <div className="w-20 shrink-0">
+        <header className="flex w-full shrink-0 items-center justify-between gap-2 p-4 lg:justify-normal lg:gap-1 lg:px-2 lg:py-2">
+          {/* Izquierda: minimizar (en el PC, del ancho de los botones de la derecha, para que el título quede centrado);
+              centro (PC): de dónde suena; derecha: «Canción | Letra», Jam y ⋮. Minimizar: deslizar hacia abajo o, en el
+              PC, la tecla Esc. El selector va aquí arriba para que la letra tenga todo el alto del centro. */}
+          <div className="shrink-0 lg:w-20">
             <IconButton label="Minimizar reproductor" onClick={close} className="text-white">
               <ChevronDown className="size-6" aria-hidden="true" />
             </IconButton>
@@ -173,14 +174,14 @@ export function NowPlayingSheet() {
             <p className="truncate text-sm font-bold">{contextName ?? 'Tu música'}</p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
+            {!hideViewToggle && <ViewToggle view={view} />}
             <JamButton />
             <TrackMenu track={current} />
           </div>
         </header>
 
-        {/* Centro: la carátula nítida (como Spotify y YouTube Music) o, si eliges «Letra», el karaoke. */}
+        {/* Centro: la carátula nítida (como Spotify y YouTube Music) o, si eliges «Letra», el karaoke con todo el alto. */}
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3">
-          {!hideViewToggle && <ViewToggle view={view} />}
           {showLyrics ? (
             <LyricsPanel track={current} />
           ) : (
@@ -317,14 +318,14 @@ function ViewToggle({ view }: { view: YouTubeView }) {
     ['letra', 'Letra'],
   ]
   return (
-    <div role="group" aria-label="Qué ver" className="flex h-9 shrink-0 rounded-full bg-black/40 p-1 text-sm font-semibold">
+    <div role="group" aria-label="Qué ver" className="flex h-8 shrink-0 rounded-full bg-black/40 p-0.5 text-[13px] font-semibold">
       {options.map(([value, label]) => (
         <button
           key={value}
           type="button"
           aria-pressed={view === value}
           onClick={() => youtubeView.set(value)}
-          className={`rounded-full px-4 py-1 transition-colors ${view === value ? 'bg-white text-black' : 'text-white/80 hover:text-white'}`}
+          className={`rounded-full px-3 transition-colors ${view === value ? 'bg-white text-black' : 'text-white/80 hover:text-white'}`}
         >
           {label}
         </button>
