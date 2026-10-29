@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useSyncExternalStore } from 'react'
 import { Route, Routes, useLocation, type Location } from 'react-router'
 import { genreIndex } from './data/genreIndex'
-import { hasSeenOnboarding } from './lib/onboarding'
+import { onboarding } from './lib/onboarding'
 import { startUpdateChecks } from './lib/updates'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
+import { startNativeLikes } from './player/nativeLikes'
 import { usePlayerShortcuts } from './player/usePlayerShortcuts'
 import { Home } from './pages/Home'
 
@@ -22,19 +23,20 @@ const YtmPage = lazy(() => import('./pages/YtmPage').then((m) => ({ default: m.Y
 
 export default function App() {
   const location = useLocation()
-  const [onboarded, setOnboarded] = useState(hasSeenOnboarding)
+  const onboarded = useSyncExternalStore(onboarding.subscribe, onboarding.seen)
   usePlayerShortcuts()
   useEffect(() => {
     if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
+    startNativeLikes() // el corazón del widget de Android
     // El índice de géneros de la radio (se guarda 7 días): se arma en segundo plano, después de cargar Inicio.
     const timer = window.setTimeout(() => void genreIndex(), 4000)
     return () => window.clearTimeout(timer)
   }, [])
-  // La primera vez, la bienvenida (artistas, ritmos y cómo importar) va antes que Inicio y que todo lo demás.
+  // La primera vez (o si la pides en Ajustes), la bienvenida va antes que Inicio y que todo lo demás.
   if (!onboarded) {
     return (
       <Suspense fallback={null}>
-        <Onboarding onDone={() => setOnboarded(true)} />
+        <Onboarding />
       </Suspense>
     )
   }

@@ -16,6 +16,7 @@ data class WidgetSnapshot(
     val title: String? = null,
     val artist: String? = null,
     val playing: Boolean = false,
+    val liked: Boolean = false, // está en Tus me gusta (lo dice la app)
     val artwork: Bitmap? = null,
 )
 
@@ -30,8 +31,8 @@ object SoundBlueWidgetState {
     val snapshot: StateFlow<WidgetSnapshot> = state.asStateFlow()
 
     @JvmStatic
-    fun publish(context: Context, title: String?, artist: String?, playing: Boolean, artwork: Bitmap?) {
-        val next = WidgetSnapshot(title, artist, playing, artwork)
+    fun publish(context: Context, title: String?, artist: String?, playing: Boolean, liked: Boolean, artwork: Bitmap?) {
+        val next = WidgetSnapshot(title, artist, playing, liked, artwork)
         if (next == state.value) return
         state.value = next
         val app = context.applicationContext

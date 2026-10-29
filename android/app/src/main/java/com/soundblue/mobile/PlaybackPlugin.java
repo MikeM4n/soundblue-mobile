@@ -143,6 +143,18 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         main.post(() -> call.resolve(state()));
     }
 
+    /** Si la canción está en Tus me gusta (el corazón del widget). Sin el servicio en marcha no hay widget que pintar. */
+    @PluginMethod
+    public void setLiked(final PluginCall call) {
+        final String videoId = call.getString("id", "");
+        final boolean liked = call.getBoolean("liked", false);
+        main.post(() -> {
+            final PlaybackService service = PlaybackService.get();
+            if (service != null) service.setLiked(videoId, liked);
+            call.resolve();
+        });
+    }
+
     // ---- Eventos del servicio (hilo principal) ----
 
     @Override
@@ -168,6 +180,13 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         data.put("skipped", skipped);
         data.put("seq", service == null ? 0 : service.getGeneration());
         notifyListeners("trackFailed", data);
+    }
+
+    @Override
+    public void onLikeToggle(String videoId) {
+        final JSObject data = new JSObject();
+        data.put("id", videoId);
+        notifyListeners("likeToggle", data);
     }
 
     // ---- Internos ----

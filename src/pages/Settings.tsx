@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { GenrePicker } from '../components/tastes/GenrePicker'
 import { Switch } from '../components/ui/Switch'
+import { onboarding } from '../lib/onboarding'
 import { settings, useSettings, type ThemeChoice } from '../lib/settings'
 
 const THEMES: { key: ThemeChoice; label: string; note: string }[] = [
@@ -43,6 +44,13 @@ export function Settings() {
         <h2 id="ajustes-mas" className="text-lg font-bold">Más</h2>
         <ul className="mt-2">
           <LinkRow to="/gustos">Cambiar tus artistas</LinkRow>
+          <li>
+            {/* Vuelve a mostrar la bienvenida (artistas, ritmos y cómo importar); la música sigue sonando. */}
+            <button type="button" onClick={onboarding.replay} className="flex w-full items-center justify-between py-2 text-left font-semibold hover:underline">
+              Ver la bienvenida otra vez
+              <ChevronRight className="size-5 text-texto-sec" aria-hidden="true" />
+            </button>
+          </li>
           <LinkRow to="/ayuda">Ayuda</LinkRow>
         </ul>
         <p className="mt-3 text-sm text-texto-sec">Versión: <span className="font-semibold text-texto">{__APP_VERSION__}</span></p>

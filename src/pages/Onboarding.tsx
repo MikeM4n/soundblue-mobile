@@ -3,36 +3,33 @@ import { useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { ArtistPicker } from '../components/tastes/ArtistPicker'
 import { GenrePicker } from '../components/tastes/GenrePicker'
-import { readTastes, saveTastes, skipTastes, SUGGESTED_ARTISTS } from '../data/tastes'
+import { readTastes, saveTastes, SUGGESTED_ARTISTS } from '../data/tastes'
 import type { YtmCard } from '../data/ytmusic'
-import { markOnboardingSeen } from '../lib/onboarding'
+import { onboarding } from '../lib/onboarding'
 
 const STEPS = 3
 
 /**
- * Bienvenida, a pantalla completa la primera vez que abres la app (lib/onboarding.ts): tus artistas, tus ritmos y cómo
- * traer tu música. Lo que elijas se guarda igual que en «Cambiar tus artistas» y en Ajustes → Mis Géneros Favoritos,
- * y «Empezar a escuchar» lleva a Inicio.
+ * Bienvenida, a pantalla completa la primera vez que abres la app o cuando la pides en Ajustes (lib/onboarding.ts):
+ * tus artistas, tus ritmos y cómo traer tu música. Lo que elijas se guarda igual que en «Cambiar tus artistas» y en
+ * Ajustes → Mis Géneros Favoritos, y «Empezar a escuchar» lleva a Inicio.
  */
-export function Onboarding({ onDone }: { onDone: () => void }) {
+export function Onboarding() {
   const navigate = useNavigate()
   const [step, setStep] = useState(0)
   const [artists, setArtists] = useState<YtmCard[]>(() => readTastes()?.artists ?? [])
 
   const go = (next: number) => {
-    // Al dejar el paso de artistas se guardan; sin elegir ninguno, Inicio ya no los vuelve a pedir (se cambian después).
-    if (step === 0) {
-      if (artists.length) saveTastes(artists)
-      else skipTastes()
-    }
+    // Al dejar el paso de artistas se guardan tal cual (también si no elegiste ninguno o quitaste los que tenías):
+    // Inicio ya no los vuelve a pedir y se cambian después en «Cambiar tus artistas».
+    if (step === 0) saveTastes(artists)
     setStep(next)
     window.scrollTo(0, 0)
   }
 
   const finish = () => {
-    markOnboardingSeen()
     navigate('/', { replace: true })
-    onDone()
+    onboarding.finish()
   }
 
   return (

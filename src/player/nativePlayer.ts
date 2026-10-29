@@ -45,10 +45,12 @@ interface NativePlayerPlugin {
   previous(): Promise<void>
   setVolume(options: { volume: number }): Promise<void>
   setRepeatOne(options: { enabled: boolean }): Promise<void>
+  setLiked(options: { id: string; liked: boolean }): Promise<void>
   getState(): Promise<NativeState>
   addListener(eventName: 'state', listener: (state: NativeState) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackChanged', listener: (event: NativeState & { id: string; reason: TrackChange }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackFailed', listener: (event: PlaybackFailure & { seq?: number }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'likeToggle', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>
 }
 
 // android/app/src/main/java/com/soundblue/mobile/PlaybackPlugin.java
@@ -157,6 +159,18 @@ export class NativePlayerBackend implements MediaBackend {
   }
 
   getDuration() { return this.duration }
+
+  /** Si la canción está en Tus me gusta: el corazón del widget. Antes de cargar nada no hay widget que pintar. */
+  setLiked(id: string, liked: boolean): boolean {
+    if (!this.loaded) return false
+    void NativePlayer.setLiked({ id, liked }).catch(ignore)
+    return true
+  }
+
+  /** Se tocó el corazón del widget sobre la canción `id`. */
+  onLikeToggle(listener: (id: string) => void) {
+    if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('likeToggle', ({ id }) => listener(id))
+  }
 
   /** Una canción que se le mandó al reproductor nativo (por si avanzó a una que el motor ya no tiene en su cola). */
   trackFor(id: string): Track | undefined {

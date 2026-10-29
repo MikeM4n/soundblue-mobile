@@ -7,6 +7,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -33,7 +34,11 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.session.DefaultMediaNotificationProvider;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
+import androidx.media3.session.SessionCommand;
+import androidx.media3.session.SessionCommands;
+import androidx.media3.session.SessionResult;
 
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.soundblue.mobile.widget.SoundBlueWidgetState;
 
@@ -43,8 +48,10 @@ import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Reproductor de SoundBlue: ExoPlayer con la cola de canciones dentro del servicio de Android. Al terminar una canción
@@ -60,6 +67,9 @@ public final class PlaybackService extends MediaSessionService {
     private static final int MAX_FAILURES = 10; // canciones seguidas que fallan antes de detenerse
     private static final long SAME_POSITION_MS = 2000;
     private static final int WIDGET_ARTWORK_PX = 256;
+    /** Comando de sesión del corazón del widget: «Me gusta» / quitar de Tus me gusta la que suena. */
+    public static final String ACTION_TOGGLE_LIKE = "com.soundblue.mobile.TOGGLE_LIKE";
+    private static final SessionCommand TOGGLE_LIKE = new SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY);
 
     /** Lo que la interfaz quiere saber del reproductor. Siempre en el hilo principal. */
     interface Events {
@@ -69,6 +79,9 @@ public final class PlaybackService extends MediaSessionService {
         void onStateChanged();
 
         void onTrackFailed(String videoId, String message, boolean network, boolean skipped);
+
+        /** Se tocó el corazón del widget: la app agrega o quita la canción de Tus me gusta. */
+        void onLikeToggle(String videoId);
     }
 
     private static PlaybackService instance;
@@ -85,6 +98,7 @@ public final class PlaybackService extends MediaSessionService {
     private boolean loading; // dentro de `load`: los estados intermedios no se avisan (se avisa uno al final)
     private Uri widgetArtworkUri; // carátula que tiene (o está cargando) el widget
     private Bitmap widgetArtwork;
+    private final Set<String> likedIds = new HashSet<>(); // las que la app dice que están en Tus me gusta
     private int generation; // número del último `load` de la app: con él, la app descarta avisos de antes
 
     static PlaybackService get() {
@@ -119,7 +133,10 @@ public final class PlaybackService extends MediaSessionService {
         final Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
         final PendingIntent openApp = PendingIntent.getActivity(this, 0, launch,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        session = new MediaSession.Builder(this, player).setSessionActivity(openApp).build();
+        session = new MediaSession.Builder(this, player)
+                .setSessionActivity(openApp)
+                .setCallback(new SessionCallback())
+                .build();
 
         final DefaultMediaNotificationProvider notification = new DefaultMediaNotificationProvider.Builder(this).build();
         notification.setSmallIcon(R.drawable.ic_stat_soundblue);
@@ -148,7 +165,7 @@ public final class PlaybackService extends MediaSessionService {
     public void onDestroy() {
         instance = null;
         events = null;
-        SoundBlueWidgetState.publish(this, null, null, false, null); // sin servicio no hay nada que controlar
+        SoundBlueWidgetState.publish(this, null, null, false, false, null); // sin servicio no hay nada que controlar
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
             if (connectivity != null) connectivity.unregisterNetworkCallback(networkCallback);
@@ -255,6 +272,21 @@ public final class PlaybackService extends MediaSessionService {
 
     void setRepeatOne(boolean enabled) {
         player.setRepeatMode(enabled ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
+    }
+
+    /** La app avisa si la canción está en Tus me gusta (el corazón del widget). */
+    void setLiked(String videoId, boolean liked) {
+        if (liked ? likedIds.add(videoId) : likedIds.remove(videoId)) updateWidget();
+    }
+
+    /** Corazón del widget. Tus me gusta viven en la app: sin ella conectada no se puede guardar, así que no hace nada. */
+    private void toggleLike() {
+        final MediaItem item = player.getCurrentMediaItem();
+        if (item == null || events == null) return;
+        // El corazón cambia al instante; la app lo confirma con setLiked al guardar.
+        if (!likedIds.remove(item.mediaId)) likedIds.add(item.mediaId);
+        updateWidget();
+        events.onLikeToggle(item.mediaId);
     }
 
     // ---- Cola ----
@@ -455,6 +487,31 @@ public final class PlaybackService extends MediaSessionService {
         }
     }
 
+    /** Lo que la sesión acepta además de lo normal: el corazón, solo desde la propia app (el widget). */
+    private final class SessionCallback implements MediaSession.Callback {
+        @Override
+        public MediaSession.ConnectionResult onConnect(MediaSession session, MediaSession.ControllerInfo controller) {
+            if (!getPackageName().equals(controller.getPackageName())) {
+                return MediaSession.Callback.super.onConnect(session, controller);
+            }
+            final SessionCommands commands =
+                    MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon().add(TOGGLE_LIKE).build();
+            return new MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(commands)
+                    .build();
+        }
+
+        @Override
+        public ListenableFuture<SessionResult> onCustomCommand(MediaSession session, MediaSession.ControllerInfo controller,
+                                                               SessionCommand command, Bundle args) {
+            if (ACTION_TOGGLE_LIKE.equals(command.customAction)) {
+                toggleLike();
+                return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
+            }
+            return MediaSession.Callback.super.onCustomCommand(session, controller, command, args);
+        }
+    }
+
     // ---- Widget (widget/SoundBlueWidget.kt) ----
 
     private void updateWidget() {
@@ -462,7 +519,7 @@ public final class PlaybackService extends MediaSessionService {
         if (item == null) {
             widgetArtworkUri = null;
             widgetArtwork = null;
-            SoundBlueWidgetState.publish(this, null, null, false, null);
+            SoundBlueWidgetState.publish(this, null, null, false, false, null);
             return;
         }
         final MediaMetadata metadata = item.mediaMetadata;
@@ -475,6 +532,7 @@ public final class PlaybackService extends MediaSessionService {
                 metadata.title == null ? item.mediaId : metadata.title.toString(),
                 metadata.artist == null ? "" : metadata.artist.toString(),
                 !Util.shouldShowPlayButton(player), // ⏸ también mientras carga, como en la app
+                likedIds.contains(item.mediaId),
                 widgetArtwork);
     }
 
