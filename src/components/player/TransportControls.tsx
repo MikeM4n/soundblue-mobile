@@ -16,7 +16,7 @@ export function TransportControls({ large = false, showFavorite = false }: { lar
   const { current, status, shuffle, repeat } = usePlayer()
   const { favorites } = useLibrary()
   const disabled = !current
-  const playing = status === 'playing' || status === 'buffering'
+  const playing = status === 'playing'
   const busy = status === 'loading' || status === 'buffering'
   const icon = large ? 'size-6' : 'size-5'
   const liked = current ? favorites.some((track) => track.id === current.id) : false

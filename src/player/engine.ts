@@ -1,33 +1,19 @@
 // Motor de reproducción de SoundBlue, con la cola de Spotify:
 // - «Siguiente en la cola»: las canciones que agregas tú, en el orden en que las agregaste. Suenan primero.
 // - «Siguiente de: …»: el resto de la lista, álbum o búsqueda desde donde diste play.
-// Usa el reproductor oficial de YouTube y recuerda la sesión.
+// Usa el backend de audio y recuerda la sesión.
 import { isGenreKey, type GenreKey } from '../data/genreIndex'
 import { listening } from '../data/history'
 import { createRadio, type QueueGroup, type RadioPick, type RadioSource } from '../data/radio'
 import { logDuplicate } from '../lib/duplicateLog'
 import { settings } from '../lib/settings'
-import { ytmAlternatives } from '../data/ytmusic'
-import { isLocalNetworkAddress } from '../lib/platform'
 import { showToast } from '../ui/toast'
 import { setupMediaSession, updateMetadata, updatePlaybackState, updatePosition } from './mediaSession'
-import { isTrack, type BackendState, type Repeat, type Status, type Track } from './types'
-import { onlyInYouTubeMusic } from './unavailable'
-import { YouTubeBackend } from './youtube'
+import { isTrack, type BackendState, type MediaBackend, type Repeat, type Status, type Track } from './types'
+import { NativeAudioBackend } from './nativeAudio'
 
 const SESSION_KEY = 'soundblue:reproductor'
 const DURATIONS_KEY = 'soundblue:duraciones'
-const SUBSTITUTES_KEY = 'soundblue:versiones'
-const SUBSTITUTES_MAX = 300
-
-function readSubstitutes(): Map<string, string> {
-  try {
-    return new Map(Object.entries(JSON.parse(localStorage.getItem(SUBSTITUTES_KEY) || '{}')))
-  } catch {
-    return new Map()
-  }
-}
-
 /** Foto del estado que leen los componentes (inmutable: cambia de objeto en cada actualización). */
 export interface PlayerSnapshot {
   current: Track | null
@@ -51,7 +37,6 @@ export interface PlayerSnapshot {
   muted: boolean
   error: string | null
   durations: Readonly<Record<string, number>>
-  pausedOnExit: boolean // YouTube la pausó al salir de la app (no fuiste tú): la app ofrece «Reanudar»
 }
 
 // 'lista': no sonaba nada, así que quedó como canción actual, en pausa (los gestos no reproducen solos).
@@ -91,25 +76,7 @@ const POOL_SIZE = 10 // «Recomendadas» y «Por Descubrir» muestran hasta 10 c
 const POOL_LOW = 6 // …y se reponen (en tanda, para variar artistas) cuando les quedan menos de 6
 const SKIP_SECONDS = 30 // pasar a la siguiente antes de esto cuenta como saltada (data/history.ts)
 
-const UNAVAILABLE = new Set([100, 101, 150]) // borrado/privado o el dueño no permite incrustarlo
-const ONLY_IN_YTM = 'Esta canción no está disponible aquí: YouTube no deja reproducirla fuera de sus apps.'
 const OFFLINE = 'Sin conexión: la música sigue en cuanto vuelva internet.'
-
-// Auto‑reanudación (experimental): YouTube o Chrome pausan el reproductor en el mismo segundo en que la página se oculta.
-// La app no pausa nunca ni toca el sonido al salir: cuando detecta esa pausa manda el Mute‑Trick en el acto (0 ms), otro a
-// los 0,5 s y un respaldo a los 1,5 s (contados desde la pausa), y nada más, para no saturar al navegador.
-const AUTO_RESUME_SCHEDULE_MS = [0, 500, 1500]
-export const AUTO_RESUME_TRIES = AUTO_RESUME_SCHEDULE_MS.length // por canción, cada vez que sales de la app
-const UNMUTE_AFTER_MS = 800 // el ▶ va en silencio y a los 0,8 s vuelve el volumen (así volvió a sonar en el teléfono)
-const START_BLOCKED_MS = 7000 // al abrir: si el navegador no la deja arrancar sola, a los 7 s queda en pausa (lista para ▶)
-/** Lo que se anota en el registro de diagnóstico (con un detalle en texto). */
-export type AutoResumeEvent = 'pausa' | 'temporizador' | 'play' | 'resultado' | 'exito' | 'volumen' | 'volver' | 'abrir' | 'pagehide'
-
-const RESULT: Partial<Record<Status, string>> = { playing: 'Sonando', paused: 'En pausa', buffering: 'Cargando', loading: 'Cargando' }
-// Solo se reanuda una pausa que llega justo después de salir o de un intento: una pausa más tarde puede ser tuya
-// (⏸ en la notificación de YouTube, que no pasa por la app) y esa se respeta.
-const EXIT_PAUSE_WINDOW_MS = 3000
-const RETRY_PAUSE_WINDOW_MS = 15000 // en el teléfono, YouTube volvió a pausar ~10 s después de reanudar
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
 const range = (n: number) => Array.from({ length: n }, (_, i) => i)
@@ -129,7 +96,7 @@ function move<T>(list: T[], from: number, to: number) {
 }
 
 export class PlayerEngine {
-  readonly youtube: YouTubeBackend // el ÚNICO reproductor de la app (lo coloca VideoStage)
+  readonly audio: NativeAudioBackend
   private context: Context | null = null
   private order: number[] = [] // índices de context.tracks en orden de reproducción
   private pos = -1 // posición en `order` de la canción de la lista que va sonando
@@ -146,30 +113,14 @@ export class PlayerEngine {
   private duration = 0
   private error: string | null = null
   private durations: Record<string, number> = {}
-  private loadedId: string | null = null // video que tiene cargado el reproductor de YouTube
+  private loadedId: string | null = null // canción que tiene cargada el elemento de audio
   private failures = 0 // errores seguidos, para no saltar sin fin
   // Para el historial de escucha: una vez por canción cargada.
   private startedId: string | null = null
   private countedId: string | null = null
-  // Versiones que sí se dejan incrustar, por id de la canción original (se recuerdan entre sesiones).
-  private substitutes = readSubstitutes()
-  private recovery: { trackId: string; tried: Set<string>; candidates: string[] | null } | null = null
   private ticker: number | undefined
   private saveTimer: number | undefined
-  private startTimer: number | undefined
-  // Para distinguir la pausa de YouTube al salir de la app (se ofrece «Reanudar») de la que pide el usuario.
   private userPaused = false
-  private pausedOnExit = false
-  private resumeTimer: number | undefined
-  private resumeTries = 0
-  private hiddenAt = 0
-  private lastTryAt = 0
-  private pauseSeenAt = 0 // cuándo se detectó la pausa que arrancó la serie de intentos (para el registro)
-  private awaitingResume = false // se mandó ▶ y todavía no suena (para anotar «Reanudación exitosa»)
-  private playedSinceTry = false // volvió a sonar tras el último intento: una pausa nueva arranca otro temporizador
-  private resumeMuted = false // un intento silenció el reproductor: el volumen vuelve a los 0,8 s o al volver a la app
-  private unmuteTimer: number | undefined
-  private resumeOnStart = false // al cerrar la app sonaba (no la pausaste tú): al abrirla vuelve a sonar sola
   private radioMore: RadioSource | null = null // la radio de la canción que suena (playRadio o la de extendRadio)
   private radioOwn = new Set<string>() // la semilla de esa radio y lo que dio (si suena otra, se arma su radio)
   // «Recomendadas» y «Por Descubrir»: lo que da esa radio. No suenan hasta que pasan a la cola (tú o la Fila Dinámica).
@@ -180,116 +131,28 @@ export class PlayerEngine {
   private discarded = new Set<string>() // descartadas en las pestañas: esta radio no las vuelve a dar
   private resumeWhenOnline = false // falló por falta de internet: al volver la conexión, suena sola
   private playingWhenOffline = false // sonaba cuando se fue internet
-  private resumeListeners = new Set<(event: AutoResumeEvent, detail: string) => void>()
   private lastSave = 0
   private listeners = new Set<() => void>()
   private snapshot: PlayerSnapshot
 
   constructor() {
-    this.youtube = new YouTubeBackend({
+    this.audio = new NativeAudioBackend({
       onReady: () => this.applyVolume(),
       onState: (state) => this.current && this.onBackendState(state),
       onError: (code) => this.current && this.onBackendError(code),
+      onMediaNext: () => this.next(),
+      onMediaPrevious: () => this.prev(),
     })
     this.restore()
     this.snapshot = this.buildSnapshot()
     setupMediaSession(this)
-    window.addEventListener('pagehide', () => {
-      this.saveNow()
-      this.lastGasp()
-    })
-    // Al salir la app no toca el sonido (la pausa la hacen YouTube o Chrome): solo anota la hora, para reconocer esa
-    // pausa (onBackendState). Al volver: se cancelan los intentos pendientes y, si quedó en pausa por haber salido (no la
-    // pausaste tú), ▶ enseguida.
-    document.addEventListener('visibilitychange', () => {
-      this.cancelAutoResume()
-      if (document.visibilityState === 'hidden') this.hiddenAt = Date.now()
-      else this.resumeOnReturn()
-    })
+    window.addEventListener('pagehide', () => this.saveNow())
     // Sin internet: ninguna canción está guardada en el teléfono (el reproductor de YouTube no lo permite), así que no
     // se salta nada; al volver la conexión sigue la misma lista donde iba.
     window.addEventListener('offline', () => this.onOffline())
     window.addEventListener('online', () => this.onOnline())
     // Al encender la Fila Dinámica, la cola se completa enseguida.
     settings.subscribe(() => void this.extendRadio())
-    // Una canción que YouTube no deja reproducir aquí sale de tu cola, de lo que sigue y de las pestañas.
-    onlyInYouTubeMusic.subscribe(() => this.dropUnplayable())
-  }
-
-  /** Quita de la cola, de lo que sigue y de las pestañas las que ya se sabe que no suenan aquí (no la que suena). */
-  private dropUnplayable() {
-    const bad = (track: Track) => track.id !== this.current?.id && this.knownUnplayable(track)
-    const context = this.context
-    const queue = this.queue.filter((track) => !bad(track))
-    const order = context ? [...this.order.slice(0, this.pos + 1), ...this.order.slice(this.pos + 1).filter((i) => !bad(context.tracks[i]))] : this.order
-    let dropped = queue.length !== this.queue.length || order.length !== this.order.length
-    this.queue = queue
-    this.order = order
-    for (const kind of RECS_KINDS) {
-      const kept = this.pools[kind].filter((track) => !bad(track))
-      dropped ||= kept.length !== this.pools[kind].length
-      this.pools[kind] = kept
-    }
-    if (!dropped) return
-    this.changed()
-    this.topUp() // con la Fila Dinámica, otra en su lugar
-    void this.fillPools()
-  }
-
-  /**
-   * pagehide (la página se cierra o el navegador la guarda): si sonaba, o quedó en pausa por salir, y no la pausaste tú,
-   * un último ▶. En las pruebas del teléfono, ir a Inicio NO dispara pagehide (solo visibilitychange): sirve sobre todo
-   * cuando el navegador cierra o guarda la pestaña.
-   */
-  private lastGasp() {
-    if (this.userPaused || !(this.pausedOnExit || this.status === 'playing' || this.status === 'buffering')) return
-    this.emitResume('pagehide', '')
-    this.backend.play()
-  }
-
-  /** Mute‑Trick: silencio → ▶ (playVideo) → Media Session en «sonando»; a los 0,8 s se anota cómo quedó y vuelve el volumen. */
-  private muteTrick() {
-    this.resumeMuted = true
-    this.youtube.setVolume(this.volume, true)
-    this.backend.play()
-    updatePlaybackState('playing')
-    window.clearTimeout(this.unmuteTimer)
-    this.unmuteTimer = window.setTimeout(() => {
-      this.emitResume('resultado', RESULT[this.status] ?? this.status)
-      this.restoreVolume()
-    }, UNMUTE_AFTER_MS)
-  }
-
-  /** Al volver a la app: si quedó en pausa por haber salido (no fuiste tú), ▶ sin esperar. */
-  private resumeOnReturn() {
-    if (!this.pausedOnExit || this.userPaused || this.status !== 'paused') return
-    this.emitResume('volver', '')
-    this.play()
-  }
-
-  /**
-   * Al abrir la app (lo llama VideoStage cuando el reproductor ya tiene dónde vivir): si al cerrarla la última canción
-   * sonaba y no la pausaste tú, se carga y suena sola (el reproductor da ▶ en cuanto está listo). En una pestaña normal
-   * del celular el navegador puede no dejarla arrancar con sonido sin un toque: entonces queda en pausa, lista para ▶.
-   */
-  autoStart() {
-    if (!this.resumeOnStart) return
-    this.resumeOnStart = false
-    const track = this.current
-    if (!track || this.status !== 'standby') return
-    this.emitResume('abrir', '')
-    this.play()
-    window.setTimeout(() => {
-      if (this.current !== track || this.status !== 'loading') return
-      this.status = 'paused'
-      updatePlaybackState(this.status)
-      this.changed()
-    }, START_BLOCKED_MS)
-  }
-
-  /** Para el registro de diagnóstico: avisa cada paso de la auto‑reanudación, con un detalle en texto. */
-  onAutoResume(listener: (event: AutoResumeEvent, detail: string) => void) {
-    this.resumeListeners.add(listener)
   }
 
   // ---- Suscripción para React (useSyncExternalStore) ----
@@ -332,7 +195,6 @@ export class PlayerEngine {
     const queued = new Set(this.queue.map((track) => track.id))
     const seen = new Set<string>()
     const list = tracks.filter((track) => {
-      if (track.id !== chosen.id && this.knownUnplayable(track)) return false // ya se sabe que no suena aquí
       const where = seen.has(track.id) ? 'repetida en la lista' : queued.has(track.id) ? 'ya estaba en tu cola' : null
       if (where) {
         logDuplicate(track, where)
@@ -413,7 +275,6 @@ export class PlayerEngine {
         if (this.radioMore !== more) return
         const have = this.inUse()
         const fresh = picks.filter(({ track }) => {
-          if (this.knownUnplayable(track)) return false
           if (have.has(track.id)) {
             logDuplicate(track, 'radio')
             return false
@@ -545,7 +406,7 @@ export class PlayerEngine {
 
   // ---- Controles ----
   toggle() {
-    if (this.status === 'playing' || this.status === 'buffering') this.pause()
+    if (this.status === 'playing') this.pause()
     else this.play()
   }
 
@@ -563,32 +424,7 @@ export class PlayerEngine {
 
   pause() {
     this.userPaused = true
-    this.cancelAutoResume()
     this.backend.pause()
-  }
-
-  /**
-   * Temporizador de apagado (lib/sleepTimer.ts): baja el volumen poco a poco durante `ms` y pausa. Tu volumen no cambia:
-   * al volver a dar ▶ suena como antes. Si ya estaba en pausa, no hace nada.
-   */
-  fadeOutAndPause(ms: number): Promise<void> {
-    if (this.status !== 'playing' && this.status !== 'buffering') return Promise.resolve()
-    const STEP_MS = 100
-    const steps = Math.max(1, Math.round(ms / STEP_MS))
-    return new Promise((resolve) => {
-      let step = 0
-      const timer = window.setInterval(() => {
-        step++
-        this.youtube.setVolume(this.volume * Math.max(0, 1 - step / steps), this.muted)
-        if (step < steps) return
-        window.clearInterval(timer)
-        this.pause()
-        window.setTimeout(() => {
-          this.applyVolume() // ya en pausa: el volumen vuelve a ser el tuyo
-          resolve()
-        }, 300)
-      }, STEP_MS)
-    })
   }
 
   /**
@@ -599,11 +435,6 @@ export class PlayerEngine {
     this.noteSkip()
     const before = { pos: this.pos, queue: this.queue }
     let target = this.peekNext()
-    for (let skipped = 0; target && this.knownUnplayable(target.track) && skipped < 50; skipped++) {
-      if (target.fromQueue) this.queue = this.queue.slice(1)
-      this.pos = target.pos
-      target = this.peekNext()
-    }
     if (!target) {
       ;({ pos: this.pos, queue: this.queue } = before) // no quedó ninguna que suene: todo sigue como estaba
       return false
@@ -663,7 +494,6 @@ export class PlayerEngine {
    * tu cola o en lo que sigue de la lista, no se agrega otra vez.
    */
   addToQueue(track: Track): QueueResult {
-    if (this.knownUnplayable(track)) return 'no-disponible'
     if (!this.current) {
       this.prepareTrack(track)
       return 'lista'
@@ -679,7 +509,6 @@ export class PlayerEngine {
 
   /** Pone la canción al principio de tu cola: suena justo después de la actual (si ya venía más adelante, se mueve). */
   playNext(track: Track): QueueResult {
-    if (this.knownUnplayable(track)) return 'no-disponible'
     if (!this.current) {
       this.prepareTrack(track)
       return 'lista'
@@ -817,13 +646,8 @@ export class PlayerEngine {
 
   // ---- Internos ----
 
-  private get backend(): YouTubeBackend {
-    return this.youtube
-  }
-
-  /** Ya se sabe que solo suena en la app de YouTube Music (y no hay otra versión que sí se deje incrustar). */
-  private knownUnplayable(track: Track): boolean {
-    return onlyInYouTubeMusic.has(track.id) && !this.substitutes.has(track.id)
+  private get backend(): MediaBackend {
+    return this.audio
   }
 
   private contextTrack(position: number): Track {
@@ -884,56 +708,30 @@ export class PlayerEngine {
     const track = this.current
     if (!track) return
     this.status = autoplay ? 'loading' : 'paused'
-    this.userPaused = this.pausedOnExit = false
-    this.cancelAutoResume() // cada canción tiene sus propios intentos
+    this.userPaused = false
     this.error = null
     this.time = start
     this.startedId = this.countedId = null
     this.duration = this.durations[track.id] ?? track.duration ?? 0
     updateMetadata(track, this.context?.name)
-    // Ya se sabe que no se deja reproducir aquí: no se intenta; «Sonando ahora» ofrece abrirla en YouTube Music.
-    if (this.knownUnplayable(track)) {
-      this.youtube.pause()
-      this.loadedId = null
-      this.status = 'error'
-      this.error = ONLY_IN_YTM
-      updatePlaybackState(this.status)
-      this.changed()
-      return
-    }
     this.loadedId = track.id
     updatePlaybackState(this.status)
     this.changed()
-    // Si antes hubo que usar otra versión de esta canción (la original no se deja incrustar), se usa esa.
-    const playId = this.substitutes.get(track.id) ?? track.id
-    this.backend.load(playId, { autoplay, start }).catch(() => {
+    this.backend.load(track.id, { autoplay, start, track, album: this.context?.name }).catch((error: unknown) => {
+      if (this.current !== track) return
       this.loadedId = null
       this.status = 'error'
-      this.error = 'No se pudo cargar el reproductor. Revisa tu conexión.'
+      this.error = error instanceof Error ? error.message : 'No se pudo cargar el audio. Revisa tu conexión.'
+      updatePlaybackState(this.status)
       this.emit()
     })
-    // A veces el reproductor de YouTube se queda sin arrancar aunque se pidió reproducir: a los 5 s, si sigue igual, se le
-    // repite la orden una vez (lo mismo que tocar ▶). También con la página oculta: así sigue la siguiente canción.
-    window.clearTimeout(this.startTimer)
-    if (autoplay) {
-      this.startTimer = window.setTimeout(() => {
-        if (this.current === track && this.status === 'loading') this.backend.play()
-      }, 5000)
-    }
   }
 
   private onBackendState(state: BackendState) {
     switch (state) {
       case 'playing':
         this.status = 'playing'
-        this.userPaused = this.pausedOnExit = false
-        // Ya suena: se cancela el ▶ de respaldo (si YouTube vuelve a pausar, se reacciona otra vez).
-        this.clearResumeTimers()
-        this.playedSinceTry = true
-        if (this.awaitingResume && document.visibilityState === 'hidden' && Date.now() - this.lastTryAt <= 3000) {
-          this.emitResume('exito', `intento ${this.resumeTries}`)
-        }
-        this.awaitingResume = false
+        this.userPaused = false
         this.failures = 0
         this.syncTime()
         this.startTicker()
@@ -944,19 +742,6 @@ export class PlayerEngine {
         break
       case 'paused':
       case 'cued':
-        // Sonaba (o iba a sonar), la página está oculta y no la pausaste tú: la pausaron YouTube o Chrome (la app no).
-        // Se anota (al volver se ofrece «Reanudar») y, si la pausa llegó justo al salir o tras un intento, ▶ en el acto.
-        if (document.visibilityState === 'hidden' && !this.userPaused && (this.status === 'playing' || this.status === 'buffering' || this.status === 'loading')) {
-          const now = Date.now()
-          const byYouTube = this.status === 'loading' || now - this.hiddenAt <= EXIT_PAUSE_WINDOW_MS || now - this.lastTryAt <= RETRY_PAUSE_WINDOW_MS
-          this.pausedOnExit = true
-          this.emitResume('pausa', 'lo hizo YouTube o Chrome (la app no pausa)')
-          // Primera pausa, o una nueva después de haber vuelto a sonar. Si un ▶ no arrancó, ya espera el siguiente.
-          if (byYouTube && this.resumeTimer === undefined && (this.resumeTries === 0 || this.playedSinceTry)) {
-            this.pauseSeenAt = now
-            this.attemptResume('en el acto, 0 ms')
-          }
-        }
         this.status = 'paused'
         this.syncTime()
         this.stopTicker()
@@ -974,59 +759,6 @@ export class PlayerEngine {
     updatePlaybackState(this.status)
     updatePosition(this.duration, this.time)
     this.changed()
-  }
-
-  /**
-   * Auto‑reanudación (experimental): un intento con el Mute‑Trick y, si queda otro, lo agenda según
-   * AUTO_RESUME_SCHEDULE_MS (0 ms, 0,5 s y 1,5 s desde la pausa). Si suena antes, se cancela; también si vuelves a la app
-   * o si la pausas tú. YouTube o el navegador pueden bloquearlo en cualquier momento: no está garantizado.
-   */
-  private attemptResume(label: string) {
-    if (!this.mayAutoResume() || this.resumeTries >= AUTO_RESUME_TRIES) return
-    const at = AUTO_RESUME_SCHEDULE_MS[this.resumeTries]
-    this.resumeTries++
-    this.lastTryAt = Date.now()
-    this.awaitingResume = true
-    this.playedSinceTry = false
-    this.emitResume('play', `intento ${this.resumeTries} de ${AUTO_RESUME_TRIES}, ${label}`)
-    this.muteTrick()
-    const next = AUTO_RESUME_SCHEDULE_MS[this.resumeTries]
-    if (next === undefined) return
-    this.emitResume('temporizador', `${(next - at) / 1000}s`)
-    this.resumeTimer = window.setTimeout(() => {
-      this.resumeTimer = undefined
-      this.attemptResume(`a los ${((Date.now() - this.pauseSeenAt) / 1000).toFixed(1)}s de la pausa`)
-    }, next - at)
-  }
-
-  /** Sigue oculta, no la pausaste tú y YouTube la tiene pausada. */
-  private mayAutoResume() {
-    return document.visibilityState === 'hidden' && !this.userPaused && this.pausedOnExit
-  }
-
-  private emitResume(event: AutoResumeEvent, detail: string) {
-    this.resumeListeners.forEach((listener) => listener(event, detail))
-  }
-
-  private clearResumeTimers() {
-    window.clearTimeout(this.resumeTimer)
-    this.resumeTimer = undefined
-  }
-
-  private cancelAutoResume() {
-    this.clearResumeTimers()
-    this.resumeTries = 0
-    this.awaitingResume = false
-    this.restoreVolume()
-  }
-
-  /** Devuelve el volumen que tenías si un intento dejó el reproductor en silencio. */
-  private restoreVolume() {
-    window.clearTimeout(this.unmuteTimer)
-    if (!this.resumeMuted) return
-    this.resumeMuted = false
-    this.applyVolume()
-    this.emitResume('volumen', '')
   }
 
   /** Suma una reproducción al historial (a los 30 s o al terminar), una vez por canción cargada. */
@@ -1057,54 +789,14 @@ export class PlayerEngine {
     })
   }
 
-  private onBackendError(code: number) {
+  private onBackendError(_code: number) {
     this.stopTicker()
     // Sin internet no se salta nada ni se marca como «solo en YouTube Music»: se espera a que vuelva (onOnline).
     if (!navigator.onLine) {
       this.waitForNetwork()
       return
     }
-    const track = this.current
-    // Si el dueño no deja incrustar esta versión, se prueba otra de la misma canción (video oficial, con letra…).
-    // Desde una dirección de red local YouTube las bloquea todas: ahí no vale la pena buscar.
-    if (track && UNAVAILABLE.has(code) && !isLocalNetworkAddress()) {
-      void this.tryAlternative(track, code)
-      return
-    }
-    this.skipFailed(code)
-  }
-
-  /** Carga la siguiente versión alternativa de la canción; si no quedan, pasa a la siguiente canción. */
-  private async tryAlternative(track: Track, code: number) {
-    if (this.recovery?.trackId !== track.id) this.recovery = { trackId: track.id, tried: new Set([track.id]), candidates: null }
-    const recovery = this.recovery
-    const failedId = this.substitutes.get(track.id)
-    if (failedId) recovery.tried.add(failedId)
-    this.status = 'loading'
-    this.changed()
-    if (!recovery.candidates) {
-      const found = await ytmAlternatives(track).catch(() => null)
-      if (this.current !== track) return // mientras buscaba, ya cambió de canción
-      if (!found) {
-        // No se pudo preguntar (sin conexión o falló YouTube Music): no se marca como «solo en YouTube Music».
-        this.recovery = null
-        if (!navigator.onLine) this.waitForNetwork()
-        else this.skipFailed(code)
-        return
-      }
-      recovery.candidates = found
-    }
-    const candidate = recovery.candidates.find((id) => !recovery.tried.has(id))
-    if (!candidate) {
-      // Ninguna versión se deja reproducir fuera de YouTube: se recuerda para no volver a intentarlo.
-      this.forgetSubstitute(track.id)
-      onlyInYouTubeMusic.add(track.id)
-      this.skipFailed(code)
-      return
-    }
-    recovery.tried.add(candidate)
-    this.rememberSubstitute(track.id, candidate)
-    this.backend.load(candidate, { autoplay: true, start: 0 }).catch(() => this.skipFailed(code))
+    this.skipFailed()
   }
 
   /** Sin internet: la canción queda esperando (ninguna está guardada en el teléfono) y suena sola al volver la conexión. */
@@ -1135,23 +827,17 @@ export class PlayerEngine {
     void this.extendRadio()
   }
 
-  private skipFailed(code: number) {
+  private skipFailed() {
     this.failures++
     // Si no se puede reproducir, salta a la siguiente con un aviso corto (máximo 10 seguidos).
     if (this.failures <= 10 && this.hasNext()) {
       // Todo queda dentro de SoundBlue: sin enlace a la app de YouTube Music.
-      showToast(
-        !UNAVAILABLE.has(code)
-          ? 'No se pudo reproducir esta canción, pasando a la siguiente'
-          : isLocalNetworkAddress()
-            ? 'YouTube bloquea esta canción desde la red local (http://192.168…): ábrela con https. Pasando a la siguiente'
-            : 'Esta canción no está disponible aquí, pasando a la siguiente',
-      )
+      showToast('No se pudo reproducir esta canción, pasando a la siguiente')
       this.next()
       return
     }
     this.status = 'error'
-    this.error = UNAVAILABLE.has(code) ? ONLY_IN_YTM : 'No se pudo reproducir esta canción.'
+    this.error = 'No se pudo reproducir esta canción.'
     updatePlaybackState(this.status)
     this.emit()
   }
@@ -1201,30 +887,11 @@ export class PlayerEngine {
     }
   }
 
-  private rememberSubstitute(trackId: string, videoId: string) {
-    this.substitutes.delete(trackId) // al final = la más reciente
-    this.substitutes.set(trackId, videoId)
-    while (this.substitutes.size > SUBSTITUTES_MAX) this.substitutes.delete(this.substitutes.keys().next().value!)
-    this.saveSubstitutes()
-  }
-
-  private forgetSubstitute(trackId: string) {
-    if (this.substitutes.delete(trackId)) this.saveSubstitutes()
-  }
-
-  private saveSubstitutes() {
-    try {
-      localStorage.setItem(SUBSTITUTES_KEY, JSON.stringify(Object.fromEntries(this.substitutes)))
-    } catch {
-      /* sin almacenamiento: se vuelve a buscar la próxima vez */
-    }
-  }
-
   private applyVolume() {
-    this.youtube.setVolume(this.volume, this.muted)
+    this.audio.setVolume(this.volume, this.muted)
   }
 
-  // ---- Sesión: se guarda en el navegador y se restaura al abrir (si sonaba al cerrar, vuelve a sonar: autoStart) ----
+  // ---- Sesión: se guarda en el navegador y se restaura al abrir en pausa ----
   private restore() {
     try {
       this.durations = JSON.parse(localStorage.getItem(DURATIONS_KEY) || '{}')
@@ -1265,7 +932,6 @@ export class PlayerEngine {
       if (this.current) {
         this.status = 'standby'
         this.duration = this.durations[this.current.id] ?? this.current.duration ?? 0
-        this.resumeOnStart = saved.playing === true
         updateMetadata(this.current, this.context?.name)
       }
     } catch {
@@ -1295,8 +961,6 @@ export class PlayerEngine {
           volume: this.volume,
           muted: this.muted,
           time: this.currentTime(),
-          // Sonaba (o YouTube la pausó al salir, no tú): al abrir la app vuelve a sonar sola.
-          playing: this.status === 'playing' || this.status === 'buffering' || this.status === 'loading' || this.pausedOnExit || this.resumeOnStart,
         }),
       )
     } catch {
@@ -1338,7 +1002,6 @@ export class PlayerEngine {
       muted: this.muted,
       error: this.error,
       durations: this.durations,
-      pausedOnExit: this.pausedOnExit,
     }
   }
 }

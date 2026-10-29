@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/patch-native-audio.mjs",
     "dev": "vite",
     "dev:red": "vite --host",
     "build": "tsc --noEmit && vite build",
@@ -16,7 +17,12 @@
     "worker:jam:staging": "npx --yes wrangler@4.149.0 deploy --config worker/jam.staging.wrangler.jsonc"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
     "@fontsource-variable/inter": "^5.3.0",
+    "@mediagrid/capacitor-native-audio": "^3.0.0",
     "lucide-react": "^1.61.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

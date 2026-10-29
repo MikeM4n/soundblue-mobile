@@ -3,12 +3,10 @@ import { Route, Routes, useLocation, type Location } from 'react-router'
 import { genreIndex } from './data/genreIndex'
 import { guestJam } from './jam/guestJam'
 import { hostJam } from './jam/hostJam'
-import { startDiagnostics } from './lib/diagnostics'
 import { startUpdateChecks } from './lib/updates'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
 import { usePlayerShortcuts } from './player/usePlayerShortcuts'
-import { useResumePrompt } from './player/useResumePrompt'
 import { Home } from './pages/Home'
 
 const Collection = lazy(() => import('./pages/Collection').then((m) => ({ default: m.Collection })))
@@ -27,9 +25,7 @@ const YtmPage = lazy(() => import('./pages/YtmPage').then((m) => ({ default: m.Y
 export default function App() {
   const location = useLocation()
   usePlayerShortcuts()
-  useResumePrompt() // «▶ Reanudar» al volver, si YouTube pausó la música al salir
   useEffect(() => {
-    startDiagnostics() // registro de segundo plano (Ayuda → Diagnóstico)
     if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
     hostJam.resume() // si cerraste la app con una Jam abierta, sigue recibiendo canciones
     guestJam.resume() // si estabas en la Jam de otro, lo que agregues sigue yendo a su cola

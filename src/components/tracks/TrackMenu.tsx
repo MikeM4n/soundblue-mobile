@@ -1,16 +1,14 @@
-import { EllipsisVertical, Heart, ListEnd, ListPlus, ListStart, ListX, Moon, Play, Radio, Share2, Trash, Users } from 'lucide-react'
+import { EllipsisVertical, Heart, ListEnd, ListPlus, ListStart, ListX, Play, Radio, Share2, Trash, Users } from 'lucide-react'
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useInGuestJam } from '../../jam/guestJam'
 import { shareTrack } from '../../lib/share'
-import { minutesLeft, useSleepTimer } from '../../lib/sleepTimer'
 import { useLibrary } from '../../library/store'
 import { player } from '../../player/engine'
 import { stageBox } from '../../player/stage'
 import type { Track } from '../../player/types'
 import { useNowPlaying } from '../../player/useNowPlaying'
 import { usePlayer } from '../../player/usePlayer'
-import { SleepTimerDialog } from '../player/SleepTimerDialog'
 import { PlaylistDialog } from './PlaylistDialog'
 import { addToSiguientes, playNext, removeFromQueue, removeWithUndo, startRadio, toggleFavorite, type RemoveAction } from './trackActions'
 
@@ -18,7 +16,6 @@ interface TrackMenuProps {
   track: Track
   removeAction?: RemoveAction // «Eliminar de …» cuando la lista lo permite
   onPlay?: () => void // «Reproducir» (en las filas de las listas)
-  sleepTimer?: boolean // «Temporizador» (solo en el ⋮ de «Sonando ahora»)
 }
 
 interface TrackMenuControl {
@@ -30,12 +27,11 @@ interface TrackMenuControl {
  * Botón «⋮» con las acciones de una canción. En la Jam de otro, «Agregar a la Jam» manda la canción a la cola compartida
  * (no a la de tu teléfono).
  */
-export function TrackMenu({ track, removeAction, onPlay, sleepTimer, open: openProp, onOpenChange }: TrackMenuProps & TrackMenuControl) {
+export function TrackMenu({ track, removeAction, onPlay, open: openProp, onOpenChange }: TrackMenuProps & TrackMenuControl) {
   const [openState, setOpenState] = useState(false)
   const open = openProp ?? openState
   const setOpen = onOpenChange ?? setOpenState
   const [choosingPlaylist, setChoosingPlaylist] = useState(false)
-  const [choosingTimer, setChoosingTimer] = useState(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
 
   return (
@@ -65,18 +61,9 @@ export function TrackMenu({ track, removeAction, onPlay, sleepTimer, open: openP
             setOpen(false)
             setChoosingPlaylist(true)
           }}
-          onChooseTimer={
-            sleepTimer
-              ? () => {
-                  setOpen(false)
-                  setChoosingTimer(true)
-                }
-              : undefined
-          }
         />
       )}
       {choosingPlaylist && <PlaylistDialog track={track} onClose={() => setChoosingPlaylist(false)} />}
-      {choosingTimer && <SleepTimerDialog onClose={() => setChoosingTimer(false)} />}
     </>
   )
 }
@@ -85,11 +72,9 @@ interface MenuPopoverProps extends TrackMenuProps {
   anchor: HTMLElement | null
   onClose: () => void
   onChoosePlaylist: () => void
-  onChooseTimer?: () => void
 }
 
-function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePlaylist, onChooseTimer }: MenuPopoverProps) {
-  const timerEnds = useSleepTimer()
+function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePlaylist }: MenuPopoverProps) {
   const menuRef = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
   const { favorites } = useLibrary()
@@ -187,11 +172,6 @@ function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePla
       <MenuItem icon={<Share2 className="size-4" />} onSelect={run(() => void shareTrack(track))}>
         Compartir
       </MenuItem>
-      {onChooseTimer && (
-        <MenuItem icon={<Moon className="size-4" />} onSelect={onChooseTimer}>
-          {timerEnds ? `Temporizador · faltan ${minutesLeft(timerEnds)} min` : 'Temporizador'}
-        </MenuItem>
-      )}
       {removeAction && (
         <MenuItem icon={<Trash className="size-4" />} onSelect={run(() => removeWithUndo(removeAction))}>
           Eliminar de {removeAction.listName}

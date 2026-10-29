@@ -54,7 +54,7 @@ function serviceWorkerPrecache(): Plugin {
 export default defineConfig({
   // Se publica en https://mikem4n.github.io/soundblue/ (en desarrollo: http://localhost:5173/soundblue/).
   // Debe coincidir con el nombre del repositorio en GitHub; si no, los archivos dan 404.
-  base: '/soundblue/',
+  base: './',
   // jamDevServer: las Jams (escuchar en grupo) mientras se prueba; ver server/jamDevServer.ts.
   // diagDevServer: recibe el registro de segundo plano del teléfono en la red local; ver server/diagDevServer.ts.
   plugins: [react(), tailwindcss(), serviceWorkerPrecache(), jamDevServer(), diagDevServer()],

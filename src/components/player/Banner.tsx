@@ -37,7 +37,7 @@ export function Banner() {
 
   if (!current || sheet !== 'closed') return null
 
-  const playing = status === 'playing' || status === 'buffering'
+  const playing = status === 'playing'
   const busy = status === 'loading' || status === 'buffering'
   const progress = duration > 0 ? Math.min(100, (time / duration) * 100) : 0
   const liked = favorites.some((t) => t.id === current.id)

@@ -8,11 +8,12 @@ let ids = read()
 
 function read(): Set<string> {
   try {
-    const saved = JSON.parse(localStorage.getItem(KEY) ?? '[]')
-    return new Set(Array.isArray(saved) ? saved.filter((id) => typeof id === 'string') : [])
+    // Los bloqueos guardados correspondían a la reproducción con iframe; el backend de audio usa otra ruta.
+    localStorage.removeItem(KEY)
   } catch {
-    return new Set()
+    /* almacenamiento bloqueado */
   }
+  return new Set()
 }
 
 export const onlyInYouTubeMusic = {

@@ -6,25 +6,7 @@ import { LibraryList, SavedItems, useCreatePlaylist } from '../components/librar
 import { IconButton } from '../components/ui/IconButton'
 import { useLibrary } from '../library/store'
 
-/** Qué pasa al apagar la pantalla. Sin promesas: depende de Brave y de YouTube. */
-function PlaybackInfo() {
-  return (
-    <section aria-labelledby="segundo-plano" className="mx-2 mt-8 rounded-lg bg-tarjeta p-4 text-sm">
-      <h2 id="segundo-plano" className="font-bold">Escuchar con la pantalla apagada</h2>
-      <p className="mt-2 text-texto-sec">
-        Las canciones suenan en el reproductor oficial de YouTube. Dentro de SoundBlue siguen sonando al minimizar «Sonando
-        ahora». Al salir de la app, YouTube se pausa y SoundBlue intenta reanudarla sola (experimental); si no lo logra, en Brave
-        con dos filtros de su comunidad, el ▶ de la notificación la reanuda (así funcionó en un Android 10). No está garantizado.
-      </p>
-      <Link to="/ayuda" className="mt-3 inline-flex items-center gap-1 font-semibold text-acento-texto hover:underline">
-        Cómo dejar Brave listo (segundo plano y anuncios)
-        <ChevronRight className="size-4" aria-hidden="true" />
-      </Link>
-    </section>
-  )
-}
-
-/** Tu biblioteca: «Tus me gusta», tus playlists y las «Playlists guardadas» de YouTube. En el PC, también en la barra lateral. */
+/** Biblioteca personal: favoritos y playlists guardadas. */
 export function Library() {
   const createPlaylist = useCreatePlaylist()
   const [importing, setImporting] = useState(false)
@@ -59,7 +41,7 @@ export function Library() {
           <p className="mt-1 px-2 text-sm text-texto-sec">Todavía no guardaste playlists. En Buscar, toca «+» junto a una playlist de YouTube.</p>
         )}
       </section>
-      <PlaybackInfo />
+
       {createPlaylist.dialog}
       {importing && <ImportPlaylistDialog onClose={() => setImporting(false)} />}
     </div>

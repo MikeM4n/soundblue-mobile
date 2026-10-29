@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SoundBlue</string>
+    <string name="title_activity_main">SoundBlue</string>
+    <string name="package_name">com.soundblue.mobile</string>
+    <string name="custom_url_scheme">com.soundblue.mobile</string>
+    <string name="audio_player_service_description">Allows audio to play in the background.</string>
+</resources>

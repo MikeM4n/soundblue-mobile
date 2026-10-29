@@ -1,9 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Outlet, useLocation } from 'react-router'
 import { Banner } from '../player/Banner'
-import { VideoStage } from '../player/VideoStage'
 import { Toaster } from '../ui/Toaster'
-import { BraveBanner } from './BraveBanner'
 import { MobileNav } from './MobileNav'
 import { PlayerBar } from './PlayerBar'
 import { Sidebar } from './Sidebar'
@@ -27,7 +25,6 @@ export function AppLayout() {
 
   return (
     <div className="flex h-dvh flex-col bg-fondo pt-[env(safe-area-inset-top)] lg:gap-2 lg:p-2">
-      <BraveBanner />
       <div className="flex min-h-0 flex-1 lg:gap-2">
         <Sidebar />
         {/* min-w-0: sin esto los carruseles ensanchan la página en el celular */}
@@ -38,7 +35,6 @@ export function AppLayout() {
       <PlayerBar />
       <Banner />
       <MobileNav />
-      <VideoStage />
       <Toaster />
       <InstallBanner />
     </div>

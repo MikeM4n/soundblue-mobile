@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronUp, Heart, Users } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 import { lyricsOf, type Lyrics } from '../../data/lyrics'
 import { useGuestJam } from '../../jam/guestJam'
 import { useLibrary } from '../../library/store'
@@ -9,10 +9,7 @@ import { usePreventTouchMove } from '../../lib/usePreventTouchMove'
 import { player } from '../../player/engine'
 import { sheetState, stagePulse, youtubeView, type YouTubeView } from '../../player/stage'
 import { coverSources, type Track } from '../../player/types'
-import { onlyInYouTubeMusic } from '../../player/unavailable'
 import { usePlayer } from '../../player/usePlayer'
-import { inBrowserTab, TAB_SWITCHER_TIP } from '../../lib/tabSwitcherTip'
-import { showToast } from '../../ui/toast'
 import { TrackMenu } from '../tracks/TrackMenu'
 import { toggleFavorite } from '../tracks/trackActions'
 import { Cover } from '../ui/Cover'
@@ -29,8 +26,7 @@ const INTERACTIVE = 'button, a, input, [role="menu"], [data-queue-panel], [data-
 /**
  * «Sonando ahora» en pantalla completa, como Spotify. Sube deslizándose al tocar una canción.
  * Fondo: la imagen de la canción en alta resolución, muy difuminada y oscurecida. Al centro: la carátula nítida o, con
- * «Letra», la letra tipo karaoke (la línea que se canta resaltada). El video de YouTube no se muestra en ninguna parte
- * (decisión del dueño, 25-10-2026): su reproductor suena oculto (VideoStage).
+ * «Letra», la letra tipo karaoke (la línea que se canta resaltada). El audio se reproduce en un elemento HTML oculto.
  * Debajo: título, artista, favorito, progreso y controles, siempre a la vista: tocar la carátula o el fondo no hace nada.
  * Gestos: hacia abajo = minimizar (si el panel de la cola está cerrado) · hacia arriba = «Próximas en sonar».
  */
@@ -178,7 +174,7 @@ export function NowPlayingSheet() {
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <JamButton />
-            <TrackMenu track={current} sleepTimer />
+            <TrackMenu track={current} />
           </div>
         </header>
 
@@ -199,7 +195,6 @@ export function NowPlayingSheet() {
         </div>
         {/* Abajo, alto fijo: aviso de segundo plano, título, artista, progreso, controles y la pista de la cola. */}
         <div className="shrink-0">
-          <div className="hidden lg:block"><BackgroundNotice /></div>
           <TrackInfo track={current} liked={liked} error={error} />
           <div className="lg:hidden"><QueueHint onOpen={() => setQueueOpen(true)} /></div>
         </div>
@@ -219,50 +214,8 @@ export function NowPlayingSheet() {
 }
 
 /**
- * Aviso de segundo plano (alto fijo de dos líneas, para que nada salte). En una pestaña de Chrome: el truco del selector
- * de pestañas (ℹ️ muestra el texto completo). Instalada: la app intenta reanudar sola lo que YouTube pausó (experimental)
- * y, si no lo logra, queda el ▶ de la notificación.
+ * Aviso sobre reproducción de audio en segundo plano.
  */
-function BackgroundNotice() {
-  const [tab] = useState(inBrowserTab)
-  const navigate = useNavigate()
-  const { status, pausedOnExit } = usePlayer()
-  const help = (
-    <Link to="/ayuda" state={{ seccion: 'ayuda-notificacion' }} className="font-semibold text-white/80 underline underline-offset-2">
-      Ayuda
-    </Link>
-  )
-  // YouTube la pausó al salir de la app: el respaldo por si la notificación no aparece (lo pulsa el usuario).
-  if (pausedOnExit && status === 'paused') {
-    return (
-      <p className="mx-6 mt-3 flex h-7 items-center justify-center gap-2 text-center text-[11px] leading-[14px] text-white/70">
-        <span>YouTube pausó la música al salir.</span>
-        <button type="button" onClick={() => player.play()} className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-bold text-black">
-          ▶ Reanudar
-        </button>
-      </p>
-    )
-  }
-  if (tab) {
-    const showTip = () =>
-      showToast(TAB_SWITCHER_TIP, { label: 'Ayuda', run: () => navigate('/ayuda', { state: { seccion: 'ayuda-truco-pestanas' } }) }, 15000)
-    return (
-      <p className="mx-6 mt-3 flex h-7 items-center justify-center gap-1.5 text-center text-[11px] leading-[14px] text-white/55">
-        <span className="line-clamp-2">💡 Para que no se pause, sal por las pestañas de Chrome (el número arriba) y de ahí a Inicio.</span>
-        <button type="button" aria-label="Cómo salir sin que se pause la música" onClick={showTip} className="shrink-0 text-base leading-none">
-          ℹ️
-        </button>
-      </p>
-    )
-  }
-  return (
-    <p className="mx-6 mt-3 line-clamp-2 h-7 text-center text-[11px] leading-[14px] text-white/55">
-      Al salir se pausa un instante y la app intenta reanudarla sola; si no lo logra, pulsa ▶ en la notificación ({help}).
-    </p>
-  )
-}
-
-/** «Jam»: lleva a tu sala (o a la del amigo en cuya Jam estás) sin buscarla en el menú. */
 function JamButton() {
   const navigate = useNavigate()
   const { code } = useGuestJam()
@@ -385,7 +338,6 @@ function ViewToggle({ view }: { view: YouTubeView }) {
  * barra de progreso y controles. Su alto no cambia entre canciones.
  */
 function TrackInfo({ track, liked, error }: { track: Track; liked: boolean; error: string | null }) {
-  const onlyInYtm = useSyncExternalStore(onlyInYouTubeMusic.subscribe, onlyInYouTubeMusic.get).has(track.id)
   return (
     <div className="px-6 pt-2 lg:px-10">
       <div className="flex items-end gap-3">
@@ -394,12 +346,7 @@ function TrackInfo({ track, liked, error }: { track: Track; liked: boolean; erro
             <h1 className="line-clamp-2 text-2xl leading-7 font-bold break-words">{track.title}</h1>
           </div>
           <p className="truncate text-texto-sec">{track.artist}</p>
-          {error && onlyInYtm ? (
-            // YouTube no la deja sonar fuera de sus apps (todo queda dentro de SoundBlue: sin enlace a YouTube Music).
-            <p role="alert" aria-label={error} className="truncate text-xs text-red-300">
-              No disponible aquí: YouTube no deja reproducirla fuera de sus apps
-            </p>
-          ) : error ? (
+          {error ? (
             <p role="alert" className="truncate text-xs text-red-300">
               {error}
             </p>

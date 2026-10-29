@@ -6,3 +6,4 @@ dist
 *.log
 diagnostico-telefono.json
 .wrangler
+*.apk

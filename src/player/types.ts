@@ -25,15 +25,19 @@ export type BackendState = 'unstarted' | 'cued' | 'playing' | 'paused' | 'buffer
 export interface LoadOptions {
   autoplay: boolean
   start: number // segundos
+  track?: Track
+  album?: string
 }
 
 export interface BackendEvents {
   onReady(): void
   onState(state: BackendState): void
   onError(code: number): void
+  onMediaNext?(): void
+  onMediaPrevious?(): void
 }
 
-/** Lo que el motor necesita del reproductor de YouTube. */
+/** Lo que el motor necesita de un reproductor de audio. */
 export interface MediaBackend {
   load(id: string, options: LoadOptions): Promise<void>
   play(): void

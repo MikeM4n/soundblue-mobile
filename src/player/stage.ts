@@ -1,7 +1,4 @@
-// Dónde se ve el ÚNICO reproductor de YouTube. La interfaz marca «espacios» (slots) y VideoStage
-// coloca el video encima del que corresponda, animando el cambio sin destruirlo ni recrearlo:
-// - 'pantalla': el video de «Sonando ahora» en pantalla completa.
-// - 'barra': el de la barra inferior al minimizar (celular) o el panel derecho (PC).
+// Estado visual de «Sonando ahora» y sus zonas de interfaz.
 import { useCallback } from 'react'
 
 export type SlotKind = 'pantalla' | 'barra'
@@ -91,8 +88,7 @@ export const stageBox = createStore<StageBox | null>(null)
 export const sheetState = createStore<'open' | 'closing' | 'closed'>('closed')
 
 /**
- * Qué se ve en «Sonando ahora»: 'cancion' = la carátula (y el video oculto, sonando) · 'letra' = el reproductor oficial
- * (16:9, sin nada encima) y la letra debajo. Se recuerda en este navegador (antes 'video', que ahora es 'letra').
+ * Qué se ve en «Sonando ahora»: la carátula o la letra tipo karaoke. Se recuerda en este navegador.
  */
 export type YouTubeView = 'cancion' | 'letra'
 const VIEW_KEY = 'soundblue:vista-youtube'

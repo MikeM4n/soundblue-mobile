@@ -4,8 +4,10 @@
 // van aparte y se muestran tal como los da YouTube.
 // Cuota: cada búsqueda nueva gasta 101 unidades de las 10 000 diarias de la clave (unas 99 búsquedas al
 // día), por eso se guardan las búsquedas recientes.
+import { Capacitor } from '@capacitor/core'
 import { countDataApiUnits } from '../lib/apiUsage'
 import type { Track } from '../player/types'
+import { NewPipe } from '../player/newPipe'
 
 const KEY = import.meta.env.VITE_YT_API_KEY?.trim()
 const BASE = 'https://www.googleapis.com/youtube/v3'
@@ -15,7 +17,7 @@ const CACHE_MS = 24 * 60 * 60 * 1000
 const TOPIC = / - Topic$/
 
 /** ¿Hay clave? Sin ella, Buscar depende de YouTube Music y Rumba no puede consultar vistas oficiales. */
-export const youtubeSearchEnabled = !!KEY
+export const youtubeSearchEnabled = !!KEY || Capacitor.getPlatform() === 'android'
 
 /** Se agotó la cuota diaria de la clave. */
 export class QuotaError extends Error {}
@@ -142,6 +144,24 @@ export async function youtubeSearch(query: string): Promise<YouTubeResults> {
   const cacheKey = query.trim().toLowerCase().replace(/\s+/g, ' ')
   const cached = readCache()[cacheKey]
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.results
+
+  if (Capacitor.getPlatform() === 'android') {
+    const nativeResults = await NewPipe.searchVideos({ query })
+    const tracks: Track[] = nativeResults.results.map((video) => ({
+      id: video.id,
+      title: video.title,
+      artist: video.artist,
+      duration: video.duration || undefined,
+      artwork: video.artwork || undefined,
+      ytMusic: video.ytMusic,
+    }))
+    const results = {
+      songs: tracks.filter((track) => track.ytMusic),
+      videos: tracks.filter((track) => !track.ytMusic),
+    }
+    writeCache(cacheKey, results)
+    return results
+  }
 
   // 1) Buscar (100 unidades): solo videos de la categoría Música que se pueden incrustar y reproducir fuera de YouTube.
   const found = await get<{ items?: { id?: { videoId?: string } }[] }>('search', {

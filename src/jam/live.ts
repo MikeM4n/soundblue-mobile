@@ -2,6 +2,8 @@
 // y así todos los teléfonos ven lo mismo enseguida. Si no conecta o se cae, se pregunta por HTTP cada 3 s y se reintenta
 // el WebSocket cada vez más espaciado (hasta 30 s). Protocolo: ver src/jam/api.ts.
 import { jamApi, JamError, liveUrl, type JamState } from './api'
+import { App } from '@capacitor/app'
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core'
 
 const POLL_MS = 3000
 const PING_MS = 25_000
@@ -26,6 +28,7 @@ export function watchJam(code: string, onState: (jam: JamState) => void, onGone:
   let poller: number | undefined
   let pinger: number | undefined
   let retry: number | undefined
+  let appStateListener: PluginListenerHandle | undefined
 
   const deliver = (jam: JamState) => {
     if (stopped || jam.version < version) return
@@ -118,8 +121,8 @@ export function watchJam(code: string, onState: (jam: JamState) => void, onGone:
 
   // Al volver a la app (el teléfono congela o corta las conexiones en segundo plano): estado ya y, si hace falta,
   // WebSocket nuevo sin esperar el próximo reintento.
-  const onVisible = () => {
-    if (stopped || document.visibilityState !== 'visible') return
+  const onVisible = (visible: boolean) => {
+    if (stopped || !visible) return
     void load()
     if (!open || Date.now() - lastHeard > PING_MS) {
       drop()
@@ -132,11 +135,21 @@ export function watchJam(code: string, onState: (jam: JamState) => void, onGone:
     stopped = true
     stopPolling()
     window.clearTimeout(retry)
-    document.removeEventListener('visibilitychange', onVisible)
+    document.removeEventListener('visibilitychange', onBrowserVisibility)
+    void appStateListener?.remove()
     drop()
   }
 
-  document.addEventListener('visibilitychange', onVisible)
+  const onBrowserVisibility = () => onVisible(document.visibilityState === 'visible')
+
+  if (Capacitor.isNativePlatform()) {
+    void App.addListener('appStateChange', ({ isActive }) => onVisible(isActive)).then((listener) => {
+      if (stopped) void listener.remove()
+      else appStateListener = listener
+    })
+  } else {
+    document.addEventListener('visibilitychange', onBrowserVisibility)
+  }
   void load() // el primer estado sin esperar al WebSocket
   connect()
   return { stop, refresh: () => void load() }

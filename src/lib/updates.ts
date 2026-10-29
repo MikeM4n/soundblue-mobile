@@ -6,6 +6,8 @@
 // quedarse días en una versión vieja.)
 import { player } from '../player/engine'
 import { showToast } from '../ui/toast'
+import { App } from '@capacitor/app'
+import { Capacitor } from '@capacitor/core'
 
 const RELOADED_KEY = 'soundblue:recargada-por-version'
 const CHECK_EVERY_MS = 10 * 60 * 1000
@@ -28,8 +30,8 @@ let idleTimer: number | undefined
 let started = false
 
 const busy = () => {
-  const { status, pausedOnExit } = player.getSnapshot()
-  return status === 'playing' || status === 'buffering' || pausedOnExit
+  const { status } = player.getSnapshot()
+  return status === 'playing' || status === 'buffering'
 }
 
 /** Recarga si no suena nada. Una sola recarga automática por versión (si después sigue llegando la vieja, no insiste). */
@@ -59,9 +61,13 @@ export function startUpdateChecks() {
   if (started) return
   started = true
   void checkForUpdate()
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void checkForUpdate()
-  })
+  if (Capacitor.isNativePlatform()) {
+    void App.addListener('appStateChange', ({ isActive }) => { if (isActive) void checkForUpdate() })
+  } else {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void checkForUpdate()
+    })
+  }
   window.setInterval(() => void checkForUpdate(), CHECK_EVERY_MS)
   // Con una versión nueva esperando: en cuanto la música queda en pausa 3 s, se aplica (la canción queda donde iba).
   player.subscribe(() => {

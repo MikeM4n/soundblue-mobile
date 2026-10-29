@@ -1,10 +1,13 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { showToast } from '../ui/toast'
 import { player } from '../player/engine'
+import { Capacitor } from '@capacitor/core'
 
 export function useScreenWakeLock() {
   const { status } = useSyncExternalStore(player.subscribe, player.getSnapshot)
   useEffect(() => {
+    // En Android, no mantener la pantalla encendida al reproducir.
+    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') return
     if (status !== 'playing' && status !== 'buffering') return
     type Sentinel = { release(): Promise<void>; onrelease?: (() => void) | null }
     type WakeLock = { request(type: 'screen'): Promise<Sentinel> }

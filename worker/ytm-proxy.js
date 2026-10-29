@@ -8,7 +8,7 @@ const UPSTREAM = 'https://music.youtube.com/youtubei/v1'
 // search = Buscar · browse = Inicio, playlists, álbumes y artistas · next = radio («A continuación»)
 const ENDPOINTS = new Set(['search', 'browse', 'next'])
 // Solo la app publicada y las pruebas en el PC (npm run dev / preview).
-const ORIGINS = new Set(['https://mikem4n.github.io', 'http://localhost:5173', 'http://localhost:4173'])
+const ORIGINS = new Set(['https://mikem4n.github.io', 'https://localhost', 'http://localhost:5173', 'http://localhost:4173'])
 const MAX_BODY = 32 * 1024
 // Como el navegador de una persona en music.youtube.com.
 const BROWSER_HEADERS = {
