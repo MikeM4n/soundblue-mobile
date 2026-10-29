@@ -40,10 +40,12 @@ import androidx.glance.layout.Box
 import androidx.glance.layout.Column
 import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
+import androidx.glance.layout.RowScope
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
+import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
 import androidx.glance.layout.width
@@ -78,33 +80,42 @@ private val DIMMED = Color(0x59FFFFFF) // controles apagados (nada cargado)
 private val PLAY_ICON = Color(0xFF0F0F0F)
 private val LIKED = Color(0xFF4169E1) // azul rey del logo: el corazón de Tus me gusta, como en la app
 
-// Siempre el mismo diseño (carátula a la izquierda; a la derecha la canción arriba y ⏮ ⏯ ⏭ ♥ abajo); según el alto que
-// le dé el inicio cambian los tamaños (ver Dims):
-private val SMALL = DpSize(250.dp, 56.dp) // menos de 72 dp (p. ej. el teléfono acostado)
-private val COMPACT = DpSize(250.dp, 72.dp) // 4×1 de la mayoría de los inicios
-private val TALL = DpSize(250.dp, 90.dp) // 4×1 con filas altas, o estirado
-private val TALL_WIDE = DpSize(310.dp, 90.dp) // lo mismo, con aire entre los botones
+// Siempre el mismo diseño: carátula a la izquierda y, a la derecha, la canción arriba y ⏮ ⏯ ⏭ ♥ repartidos debajo, todo
+// centrado a lo alto. Las medidas salen del tamaño real que le da el inicio (dimsFor).
+private val COMPACT_HEIGHT = 72.dp // 4×1 de la mayoría de los inicios
+private val LARGE_HEIGHT = 96.dp // 4×1 con filas altas, o estirado
+private val LARGE_BUTTON = 48.dp
+private val MAX_ART = 120.dp
+private val PADDING_X = 8.dp
+private val GUTTER = 10.dp // entre la carátula y la columna
 
 /** Medidas de un tamaño del widget. Sin `artist`, solo cabe el título. */
-private class Dims(val art: Dp, val button: Dp, val icon: Dp, val gap: Dp, val title: TextUnit, val artist: TextUnit?, val padding: Dp)
+private class Dims(val art: Dp, val button: Dp, val icon: Dp, val title: TextUnit, val artist: TextUnit?, val padding: Dp, val spacer: Dp)
 
 private fun dimsFor(size: DpSize): Dims = when {
-    // 4 + 19 + 16 + 44 + 4 = 87 dp de alto; 4 × 44 dp caben justo en lo que queda de 250 dp de ancho.
-    size.height >= TALL.height -> Dims(48.dp, 44.dp, 28.dp, if (size.width >= TALL_WIDE.width) 8.dp else 0.dp, 14.sp, 12.sp, 4.dp)
-    // 3 + 16 + 14 + 36 + 3 = 72 dp.
-    size.height >= COMPACT.height -> Dims(44.dp, 36.dp, 24.dp, 8.dp, 12.sp, 10.sp, 3.dp)
+    // 4 + 19 + 16 + 4 + 48 + 4 = 95 dp de alto. La carátula, tan grande como quepa (hasta 120 dp) sin quitarles a los
+    // botones sus 48 dp de ancho; si ni así caben (widget angosto), los botones se achican.
+    size.height >= LARGE_HEIGHT -> {
+        val art = minOf(size.height - 8.dp, size.width - PADDING_X * 2 - GUTTER - LARGE_BUTTON * 4, MAX_ART).coerceAtLeast(48.dp)
+        val button = minOf(LARGE_BUTTON, (size.width - PADDING_X * 2 - GUTTER - art) / 4)
+        Dims(art, button, button * 2 / 3, 14.sp, 12.sp, 4.dp, 4.dp)
+    }
+    // 3 + 16 + 14 + 36 + 3 = 72 dp (el de la 1.6.4).
+    size.height >= COMPACT_HEIGHT -> Dims(44.dp, 36.dp, 24.dp, 12.sp, 10.sp, 3.dp, 0.dp)
     // 3 + 16 + 32 + 3 = 54 dp: sin la línea del artista.
-    else -> Dims(40.dp, 32.dp, 22.dp, 8.dp, 12.sp, null, 3.dp)
+    else -> Dims(40.dp, 32.dp, 22.dp, 12.sp, null, 3.dp, 0.dp)
 }
 
 /**
  * Widget de SoundBlue (Jetpack Glance), como el de YouTube Music: a la izquierda la carátula y a la derecha título y
- * artista arriba, con ⏮ ⏯ ⏭ ♥ centrados abajo. Los botones le mandan la orden a PlaybackService con un MediaController
+ * artista, con ⏮ ⏯ ⏭ ♥ debajo. Los botones le mandan la orden a PlaybackService con un MediaController
  * (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene nada cargado
  * (p. ej. cerraste la app), se ve la última canción que sonó y ▶ la vuelve a poner a sonar sin abrir la app.
+ * El texto largo termina en «…» (maxLines = 1; el estilo de texto de Glance trae ellipsize="end"): un widget no puede
+ * tener marquesina.
  */
 class SoundBlueWidget : GlanceAppWidget() {
-    override val sizeMode = SizeMode.Responsive(setOf(SMALL, COMPACT, TALL, TALL_WIDE))
+    override val sizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         SoundBlueWidgetState.restore(context) // proceso nuevo: la última canción guardada
@@ -124,22 +135,16 @@ private fun WidgetContent(snapshot: WidgetSnapshot) {
     val dims = dimsFor(LocalSize.current)
     val openApp = actionStartActivity<MainActivity>()
     Row(
-        modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(horizontal = 8.dp, vertical = dims.padding),
+        modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(horizontal = PADDING_X, vertical = dims.padding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Artwork(snapshot.artwork, dims.art, GlanceModifier.clickable(openApp))
-        Spacer(GlanceModifier.width(10.dp))
-        Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight()) {
+        Spacer(GlanceModifier.width(GUTTER))
+        // Texto y botones juntos, centrados a lo alto (como Arrangement.Center): sin huecos aunque el widget sea alto.
+        Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
             SongText(snapshot, dims, GlanceModifier.fillMaxWidth().clickable(openApp))
-            // Como Arrangement.SpaceBetween (Glance no lo tiene): el texto arriba y los botones abajo.
-            Spacer(GlanceModifier.defaultWeight())
-            Row(
-                modifier = GlanceModifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Controls(snapshot, dims)
-            }
+            if (dims.spacer > 0.dp) Spacer(GlanceModifier.height(dims.spacer))
+            Controls(snapshot, dims)
         }
     }
 }
@@ -163,12 +168,11 @@ private fun SongText(snapshot: WidgetSnapshot, dims: Dims, modifier: GlanceModif
     }
 }
 
-/** ⏮ ⏯ ⏭ ♥ con las medidas de `dims`. */
+/** ⏮ ⏯ ⏭ ♥ con las medidas de `dims`, repartidos parejo en el ancho (cada uno en una cuarta parte, como SpaceEvenly). */
 @Composable
 private fun Controls(snapshot: WidgetSnapshot, dims: Dims) {
     val button = dims.button
     val icon = dims.icon
-    val gap = dims.gap
     val context = LocalContext.current
     val heart = if (snapshot.liked) R.drawable.ic_widget_favorite else R.drawable.ic_widget_favorite_border
     val heartLabel = if (snapshot.liked) "Quitar de Tus me gusta" else "Me gusta"
@@ -182,20 +186,20 @@ private fun Controls(snapshot: WidgetSnapshot, dims: Dims) {
         }
         else -> actionStartActivity<MainActivity>() // nunca ha sonado nada: a elegir música
     }
-    ControlIcon(R.drawable.ic_widget_previous, "Anterior", if (snapshot.active) actionRunCallback<PreviousAction>() else null, button, icon)
-    Gap(gap)
-    PlayButton(snapshot.active && snapshot.playing, play, button, icon)
-    Gap(gap)
-    ControlIcon(R.drawable.ic_widget_next, "Siguiente", if (snapshot.active) actionRunCallback<NextAction>() else null, button, icon)
-    Gap(gap)
     // ♥ solo con la app abierta: Tus me gusta viven en ella.
     val like = if (snapshot.active && snapshot.likeable) actionRunCallback<ToggleLikeAction>() else null
-    ControlIcon(heart, heartLabel, like, button, icon, tint = if (snapshot.liked) LIKED else TEXT)
+    Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Slot { ControlIcon(R.drawable.ic_widget_previous, "Anterior", if (snapshot.active) actionRunCallback<PreviousAction>() else null, button, icon) }
+        Slot { PlayButton(snapshot.active && snapshot.playing, play, button, icon) }
+        Slot { ControlIcon(R.drawable.ic_widget_next, "Siguiente", if (snapshot.active) actionRunCallback<NextAction>() else null, button, icon) }
+        Slot { ControlIcon(heart, heartLabel, like, button, icon, tint = if (snapshot.liked) LIKED else TEXT) }
+    }
 }
 
+/** Una cuarta parte de la fila de botones, con su botón al centro. */
 @Composable
-private fun Gap(width: Dp) {
-    if (width > 0.dp) Spacer(GlanceModifier.width(width))
+private fun RowScope.Slot(content: @Composable () -> Unit) {
+    Box(modifier = GlanceModifier.defaultWeight(), contentAlignment = Alignment.Center) { content() }
 }
 
 @Composable
