@@ -2,6 +2,7 @@ package com.soundblue.mobile;
 
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -12,12 +13,15 @@ import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
+import androidx.core.content.ContextCompat;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
+import androidx.media3.common.util.Util;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.DefaultDataSource;
@@ -30,6 +34,9 @@ import androidx.media3.session.DefaultMediaNotificationProvider;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
 
+import com.google.common.util.concurrent.ListenableFuture;
+import com.soundblue.mobile.widget.SoundBlueWidgetState;
+
 import java.io.IOException;
 import java.net.ConnectException;
 import java.net.NoRouteToHostException;
@@ -37,6 +44,7 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Reproductor de SoundBlue: ExoPlayer con la cola de canciones dentro del servicio de Android. Al terminar una canción
@@ -51,6 +59,7 @@ public final class PlaybackService extends MediaSessionService {
     private static final int MAX_BEHIND = 10; // las que ya sonaron que se guardan para «anterior»
     private static final int MAX_FAILURES = 10; // canciones seguidas que fallan antes de detenerse
     private static final long SAME_POSITION_MS = 2000;
+    private static final int WIDGET_ARTWORK_PX = 256;
 
     /** Lo que la interfaz quiere saber del reproductor. Siempre en el hilo principal. */
     interface Events {
@@ -74,6 +83,8 @@ public final class PlaybackService extends MediaSessionService {
     private String skippedFailed; // la que se quitó por fallar: el cambio de canción que sigue se debe a eso
     private boolean waitingForNetwork;
     private boolean loading; // dentro de `load`: los estados intermedios no se avisan (se avisa uno al final)
+    private Uri widgetArtworkUri; // carátula que tiene (o está cargando) el widget
+    private Bitmap widgetArtwork;
     private int generation; // número del último `load` de la app: con él, la app descarta avisos de antes
 
     static PlaybackService get() {
@@ -113,9 +124,13 @@ public final class PlaybackService extends MediaSessionService {
         final DefaultMediaNotificationProvider notification = new DefaultMediaNotificationProvider.Builder(this).build();
         notification.setSmallIcon(R.drawable.ic_stat_soundblue);
         setMediaNotificationProvider(notification);
+        // La sesión queda registrada desde ya (no solo cuando se conecta la app): si la música empieza desde el widget,
+        // la notificación sale igual y el servicio pasa a primer plano.
+        addSession(session);
 
         registerNetworkCallback();
         instance = this;
+        updateWidget();
     }
 
     @Override
@@ -133,6 +148,7 @@ public final class PlaybackService extends MediaSessionService {
     public void onDestroy() {
         instance = null;
         events = null;
+        SoundBlueWidgetState.publish(this, null, null, false, null); // sin servicio no hay nada que controlar
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
             if (connectivity != null) connectivity.unregisterNetworkCallback(networkCallback);
@@ -427,5 +443,63 @@ public final class PlaybackService extends MediaSessionService {
         public void onPlayerError(PlaybackException error) {
             onError(error);
         }
+
+        // Una vez por tanda de cambios (no por cada aviso suelto): el widget muestra lo que suena y si está en pausa.
+        @Override
+        public void onEvents(Player eventPlayer, Player.Events events) {
+            if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_MEDIA_METADATA_CHANGED,
+                    Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                    Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_TIMELINE_CHANGED)) {
+                updateWidget();
+            }
+        }
+    }
+
+    // ---- Widget (widget/SoundBlueWidget.kt) ----
+
+    private void updateWidget() {
+        final MediaItem item = player.getCurrentMediaItem();
+        if (item == null) {
+            widgetArtworkUri = null;
+            widgetArtwork = null;
+            SoundBlueWidgetState.publish(this, null, null, false, null);
+            return;
+        }
+        final MediaMetadata metadata = item.mediaMetadata;
+        if (!Objects.equals(metadata.artworkUri, widgetArtworkUri)) {
+            widgetArtworkUri = metadata.artworkUri;
+            widgetArtwork = null;
+            loadWidgetArtwork(metadata);
+        }
+        SoundBlueWidgetState.publish(this,
+                metadata.title == null ? item.mediaId : metadata.title.toString(),
+                metadata.artist == null ? "" : metadata.artist.toString(),
+                !Util.shouldShowPlayButton(player), // ⏸ también mientras carga, como en la app
+                widgetArtwork);
+    }
+
+    /** La carátula, con el mismo cargador (y caché) que la notificación. */
+    private void loadWidgetArtwork(MediaMetadata metadata) {
+        final ListenableFuture<Bitmap> future = session.getBitmapLoader().loadBitmapFromMetadata(metadata);
+        if (future == null) return;
+        final Uri uri = metadata.artworkUri;
+        future.addListener(() -> {
+            if (instance == null || !Objects.equals(uri, widgetArtworkUri)) return; // ya suena otra
+            try {
+                widgetArtwork = forWidget(future.get());
+                updateWidget();
+            } catch (Exception error) {
+                Log.w(TAG, "No se pudo cargar la carátula para el widget", error);
+            }
+        }, ContextCompat.getMainExecutor(this));
+    }
+
+    /** El widget recibe la imagen por Binder (máximo ~1 MB por envío): basta una pequeña para 48 dp. */
+    private static Bitmap forWidget(Bitmap bitmap) {
+        final int largest = Math.max(bitmap.getWidth(), bitmap.getHeight());
+        if (largest <= WIDGET_ARTWORK_PX) return bitmap;
+        final float scale = (float) WIDGET_ARTWORK_PX / largest;
+        return Bitmap.createScaledBitmap(bitmap, Math.round(bitmap.getWidth() * scale),
+                Math.round(bitmap.getHeight() * scale), true);
     }
 }

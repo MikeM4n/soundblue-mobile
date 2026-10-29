@@ -43,6 +43,19 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- Widget de la pantalla de inicio (widget/SoundBlueWidget.kt). -->
+        <receiver
+            android:name=".widget.SoundBlueWidgetReceiver"
+            android:label="@string/app_name"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/soundblue_widget_info" />
+        </receiver>
     </application>
 
     <!-- Permissions -->

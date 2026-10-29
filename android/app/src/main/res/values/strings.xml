@@ -5,4 +5,5 @@
     <string name="package_name">com.soundblue.mobile</string>
     <string name="custom_url_scheme">com.soundblue.mobile</string>
     <string name="audio_player_service_description">Allows audio to play in the background.</string>
+    <string name="widget_description">Lo que suena, con anterior, reproducir y siguiente</string>
 </resources>
