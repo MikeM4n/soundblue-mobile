@@ -82,7 +82,9 @@ export class NativePlayerBackend implements MediaBackend {
   private sent = '' // las vecinas que ya tiene el reproductor nativo (para no mandarlas otra vez)
   private known = new Map<string, Track>() // las canciones que tiene el reproductor nativo
   private repeatOne: boolean | null = null
-  private time = 0
+  private time = 0 // última posición que dio el nativo…
+  private readAt = 0 // …y cuándo (performance.now): mientras suena, el tiempo avanza solo entre lecturas
+  private playing = false
   private duration = 0
   private volume = 1
   private poller: number | undefined
@@ -96,6 +98,8 @@ export class NativePlayerBackend implements MediaBackend {
     this.listen()
     const seq = ++this.seq
     this.time = Math.max(0, options.start)
+    this.readAt = performance.now()
+    this.playing = false
     this.duration = 0
     this.sent = neighborsKey(track, options)
     this.remember(track, options)
@@ -138,6 +142,7 @@ export class NativePlayerBackend implements MediaBackend {
 
   seek(seconds: number) {
     this.time = Math.max(0, this.duration ? Math.min(seconds, this.duration) : seconds)
+    this.readAt = performance.now()
     if (this.loaded) void NativePlayer.seek({ seconds: this.time }).catch(ignore)
   }
 
@@ -145,7 +150,12 @@ export class NativePlayerBackend implements MediaBackend {
     if (this.loaded) void NativePlayer.previous().catch(ignore)
   }
 
-  getTime() { return this.time }
+  getTime() {
+    if (!this.playing) return this.time
+    const time = this.time + (performance.now() - this.readAt) / 1000
+    return this.duration > 0 ? Math.min(time, this.duration) : time
+  }
+
   getDuration() { return this.duration }
 
   /** Una canción que se le mandó al reproductor nativo (por si avanzó a una que el motor ya no tiene en su cola). */
@@ -188,13 +198,18 @@ export class NativePlayerBackend implements MediaBackend {
   }
 
   private read(state: NativeState) {
-    if (typeof state.position === 'number') this.time = state.position
+    if (typeof state.position === 'number') {
+      this.time = state.position
+      this.readAt = performance.now()
+    }
     if (typeof state.duration === 'number' && state.duration > 0) this.duration = state.duration
-    if (state.status === 'playing') this.startPolling()
+    this.playing = state.status === 'playing'
+    if (this.playing) this.startPolling()
     else this.stopPolling()
   }
 
-  // El nativo avisa los cambios de estado; el tiempo se consulta cada segundo mientras suena.
+  // El nativo avisa los cambios de estado; el tiempo se corrige cada segundo mientras suena (entre lecturas lo calcula
+  // getTime, así la barra y la letra pueden leerlo 4 veces por segundo sin preguntarle al nativo).
   private startPolling() {
     if (this.poller !== undefined) return
     this.poller = window.setInterval(() => {

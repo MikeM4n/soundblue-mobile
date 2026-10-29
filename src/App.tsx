@@ -1,8 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Route, Routes, useLocation, type Location } from 'react-router'
 import { genreIndex } from './data/genreIndex'
-import { guestJam } from './jam/guestJam'
-import { hostJam } from './jam/hostJam'
 import { startUpdateChecks } from './lib/updates'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
@@ -15,8 +13,6 @@ const ModePage = lazy(() => import('./pages/Mode').then((m) => ({ default: m.Mod
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
 const Library = lazy(() => import('./pages/Library').then((m) => ({ default: m.Library })))
 const Queue = lazy(() => import('./pages/Queue').then((m) => ({ default: m.Queue })))
-const JamGuest = lazy(() => import('./pages/JamGuest').then((m) => ({ default: m.JamGuest })))
-const JamHost = lazy(() => import('./pages/JamHost').then((m) => ({ default: m.JamHost })))
 const Search = lazy(() => import('./pages/Search').then((m) => ({ default: m.Search })))
 const SongPage = lazy(() => import('./pages/Song').then((m) => ({ default: m.SongPage })))
 const Tastes = lazy(() => import('./pages/Tastes').then((m) => ({ default: m.Tastes })))
@@ -27,8 +23,6 @@ export default function App() {
   usePlayerShortcuts()
   useEffect(() => {
     if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
-    hostJam.resume() // si cerraste la app con una Jam abierta, sigue recibiendo canciones
-    guestJam.resume() // si estabas en la Jam de otro, lo que agregues sigue yendo a su cola
     // El índice de géneros de la radio (se guarda 7 días): se arma en segundo plano, después de cargar Inicio.
     const timer = window.setTimeout(() => void genreIndex(), 4000)
     return () => window.clearTimeout(timer)
@@ -51,8 +45,6 @@ export default function App() {
           <Route path="modo/:modo" element={<ModePage />} />
           <Route path="ytm/:browseId" element={<YtmPage />} />
           <Route path="gustos" element={<Tastes />} />
-          <Route path="jam" element={<JamHost />} />
-          <Route path="jam/:code" element={<JamGuest />} />
           <Route path="cancion/:id" element={<SongPage />} />
           <Route path="*" element={<Home />} />
         </Route>

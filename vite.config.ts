@@ -5,7 +5,6 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin, type ProxyOptions } from 'vite'
 import { diagDevServer } from './server/diagDevServer'
-import { jamDevServer } from './server/jamDevServer'
 
 // YouTube Music (InnerTube) no responde a otras páginas (CORS): al probar con `npm run dev`, `dev:red` o
 // `preview`, este mismo servidor hace de intermediario. Solo datos (búsqueda y listas), nunca audio.
@@ -58,9 +57,8 @@ export default defineConfig({
   // Se publica en https://mikem4n.github.io/soundblue/ (en desarrollo: http://localhost:5173/soundblue/).
   // Debe coincidir con el nombre del repositorio en GitHub; si no, los archivos dan 404.
   base: './',
-  // jamDevServer: las Jams (escuchar en grupo) mientras se prueba; ver server/jamDevServer.ts.
   // diagDevServer: recibe el registro de segundo plano del teléfono en la red local; ver server/diagDevServer.ts.
-  plugins: [react(), tailwindcss(), serviceWorkerPrecache(), jamDevServer(), diagDevServer()],
+  plugins: [react(), tailwindcss(), serviceWorkerPrecache(), diagDevServer()],
   define: { __APP_VERSION__: JSON.stringify(APP_VERSION) },
   server: { proxy: youtubeMusicProxy },
   preview: { proxy: youtubeMusicProxy },

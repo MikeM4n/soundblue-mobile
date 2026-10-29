@@ -1,6 +1,5 @@
-import { AudioLines, EllipsisVertical, ListEnd, ListStart, Trash, Users, X } from 'lucide-react'
+import { AudioLines, EllipsisVertical, ListEnd, ListStart, Trash, X } from 'lucide-react'
 import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
-import { useInGuestJam } from '../../jam/guestJam'
 import { formatDuration } from '../../lib/format'
 import { coverSources, type Track } from '../../player/types'
 import { onlyInYouTubeMusic } from '../../player/unavailable'
@@ -21,7 +20,7 @@ export interface TrackRowProps {
   removeAction?: RemoveAction // «Eliminar de…» / «Quitar de la cola» en el menú
   trailing?: ReactNode // p. ej. el asa para reordenar en la cola
   style?: CSSProperties
-  // 'lista' (Buscar, playlists, álbumes, modos…): izquierda la agrega al final de la cola (o a la Jam), derecha abre el
+  // 'lista' (Buscar, playlists, álbumes, modos…): izquierda la agrega al final de la cola, derecha abre el
   // menú «⋮». 'cola' («En Cola»): izquierda la pone a sonar a continuación, derecha la quita (`removeAction`).
   // 'sugerencia' («Recomendadas», «Por Descubrir»): izquierda la agrega a la cola, derecha la descarta (`removeAction`).
   swipe?: 'lista' | 'cola' | 'sugerencia'
@@ -32,13 +31,12 @@ export interface TrackRowProps {
 /**
  * Fila de canción como en Spotify: portada pequeña, título, artista y menú «⋮» (Reproducir, Agregar a la cola, Me
  * gusta…). En el celular, deslizar a la IZQUIERDA es la acción rápida y nunca abre un menú (en las listas y las
- * recomendaciones, agregar a la cola o a la Jam; en «En Cola», que suene a continuación). A la DERECHA: en «Próximas en
+ * recomendaciones, agregar a la cola; en «En Cola», que suene a continuación). A la DERECHA: en «Próximas en
  * sonar» la quita de la cola o descarta la recomendación (con «Deshacer»); en las listas abre el menú. Tocar «⋮» siempre
  * abre el menú.
  */
 export function TrackRow({ track, onPlay, position, isCurrent, isPlaying, duration, removeAction, trailing, style, swipe: mode = 'lista', plain = false }: TrackRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const inJam = useInGuestJam() // en la Jam de otro, «agregar» va a la cola compartida
   const openMenu = () => window.setTimeout(() => setMenuOpen(true), SNAP_BACK_MS)
   const inQueue = mode === 'cola'
   const removes = mode !== 'lista' // a la derecha quita (cola) o descarta (recomendación): nunca abre el menú
@@ -65,8 +63,8 @@ export function TrackRow({ track, onPlay, position, isCurrent, isPlaying, durati
             </>
           ) : (
             <>
-              <span>{inJam ? 'A la Jam' : 'A la cola'}</span>
-              {inJam ? <Users className={grow} aria-hidden="true" /> : <ListEnd className={grow} aria-hidden="true" />}
+              <span>A la cola</span>
+              <ListEnd className={grow} aria-hidden="true" />
             </>
           )}
         </div>

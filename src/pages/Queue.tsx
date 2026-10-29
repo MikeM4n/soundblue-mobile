@@ -1,10 +1,8 @@
 import { ChevronLeft } from 'lucide-react'
 import { Link, useNavigate } from 'react-router'
-import { GuestJamQueue } from '../components/jam/JamQueue'
 import { QueueSections, SectionTitle } from '../components/tracks/QueueSections'
 import { TrackRow } from '../components/tracks/TrackRow'
 import { IconButton } from '../components/ui/IconButton'
-import { useInGuestJam } from '../jam/guestJam'
 import { useNowPlaying } from '../player/useNowPlaying'
 import { usePlayer } from '../player/usePlayer'
 
@@ -13,7 +11,6 @@ export function Queue() {
   const { current, status } = usePlayer()
   const navigate = useNavigate()
   const { open } = useNowPlaying()
-  const inJam = useInGuestJam() // en la Jam de otro se ve su cola aunque en tu teléfono no suene nada
   const playing = status === 'playing' || status === 'buffering' || status === 'loading'
 
   return (
@@ -25,9 +22,7 @@ export function Queue() {
         <h1 className="text-xl font-bold md:text-2xl">Próximas en sonar</h1>
       </header>
 
-      {!current && inJam ? (
-        <GuestJamQueue />
-      ) : !current ? (
+      {!current ? (
         <p className="mt-10 px-2 text-center text-texto-sec">
           No hay nada sonando.{' '}
           <Link to="/" className="text-acento-texto hover:underline">

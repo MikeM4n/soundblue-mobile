@@ -31,7 +31,7 @@ export function TransportControls({ large = false, showFavorite = false }: { lar
       </IconButton>
       <button
         type="button"
-        aria-label={playing ? 'Pausar' : 'Reproducir'}
+        aria-label={playing || busy ? 'Pausar' : 'Reproducir'}
         onClick={() => {
           vibrate() // vibración corta al dar ▶ o ⏸ (si el teléfono la tiene)
           player.toggle()

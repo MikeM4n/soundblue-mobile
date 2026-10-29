@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { formatDuration } from '../../lib/format'
 import { player } from '../../player/engine'
-import { usePlayer } from '../../player/usePlayer'
+import { usePlaybackTime, usePlayer } from '../../player/usePlayer'
 
 /** Barra de progreso: muestra el tiempo y permite adelantar o retroceder (también con las flechas). */
 export function SeekBar({ className = '' }: { className?: string }) {
-  const { current, time, duration } = usePlayer()
+  const { current, duration } = usePlayer()
+  const time = usePlaybackTime() // 4 veces por segundo: avanza suave, no a saltos
   const [dragging, setDragging] = useState<number | null>(null) // posición mientras se arrastra
   const max = Math.max(0, Math.floor(duration))
   const value = dragging ?? Math.min(time, max)
@@ -23,10 +24,17 @@ export function SeekBar({ className = '' }: { className?: string }) {
         type="range"
         min={0}
         max={max || 1}
-        step={1}
+        step="any" // la posición avanza en cuartos de segundo, sin saltos
         value={value}
         disabled={!current || !max}
         onChange={(e) => setDragging(Number(e.target.value))}
+        onKeyDown={(e) => {
+          // Con step="any" las flechas moverían una fracción: se mantiene 1 s por flecha.
+          const delta = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 0
+          if (!delta) return
+          e.preventDefault()
+          setDragging(Math.max(0, Math.min(max, Math.round((dragging ?? time) + delta))))
+        }}
         onPointerUp={commit}
         onKeyUp={commit}
         onBlur={commit}

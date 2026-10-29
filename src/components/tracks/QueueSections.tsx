@@ -1,13 +1,11 @@
 import { GripVertical, Lightbulb, Play } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import type { QueueGroup } from '../../data/radio'
-import { useInGuestJam } from '../../jam/guestJam'
 import { settings, useSettings } from '../../lib/settings'
 import { player, type RecsKind } from '../../player/engine'
 import type { Track } from '../../player/types'
 import { usePlayer } from '../../player/usePlayer'
 import { showToast } from '../../ui/toast'
-import { GuestJamQueue } from '../jam/JamQueue'
 import { Switch } from '../ui/Switch'
 import { stableKeys } from './TrackList'
 import { TrackRow } from './TrackRow'
@@ -26,7 +24,7 @@ const TIP_KEY = 'soundblue:consejo-fila-dinamica' // ya se cerró el consejo de 
  * «Próximas en sonar», en tres pestañas (la usan la página Cola y el panel que sube en «Sonando ahora»):
  * - «En Cola»: lo que va a sonar. «Siguiente en la cola» (las que agregaste), «Siguiente de: …» (la lista que elegiste)
  *   y lo que agregó la Fila Dinámica. Izquierda = a continuación, derecha = quitar (con Deshacer), ≡ = reordenar. Arriba,
- *   el interruptor de la Fila Dinámica. Si estás en la Jam de otro, arriba va la cola compartida (la de su teléfono).
+ *   el interruptor de la Fila Dinámica.
  * - «Recomendadas» y «Por Descubrir» (solo las que nunca sonaron aquí): de la radio de la canción que suena; no suenan
  *   hasta que pasan a la cola. Izquierda = a la cola, derecha = descartar (con Deshacer), «Reproducir a continuación» =
  *   todas justo después de la que suena.
@@ -81,7 +79,6 @@ function runsOf(upcoming: readonly Track[], groups: readonly (QueueGroup | null)
 
 function QueueTab({ beforePlay }: { beforePlay?: () => void }) {
   const { queue, upcoming, upcomingGroups, contextName } = usePlayer()
-  const inJam = useInGuestJam()
 
   const clearQueue = () => {
     const undo = player.clearQueue()
@@ -90,12 +87,6 @@ function QueueTab({ beforePlay }: { beforePlay?: () => void }) {
 
   return (
     <>
-      {inJam && (
-        <>
-          <GuestJamQueue />
-          <p className="mt-8 px-2 text-xs font-semibold tracking-wider text-texto-sec uppercase">En tu teléfono</p>
-        </>
-      )}
       <DynamicQueueSwitch />
       {queue.length === 0 && upcoming.length === 0 && (
         <p className="mt-6 px-2 text-sm text-texto-sec">

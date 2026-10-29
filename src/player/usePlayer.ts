@@ -5,3 +5,8 @@ import { player } from './engine'
 export function usePlayer() {
   return useSyncExternalStore(player.subscribe, player.getSnapshot)
 }
+
+/** Segundos de la canción, 4 veces por segundo mientras suena: para la barra de progreso y la letra. */
+export function usePlaybackTime() {
+  return useSyncExternalStore(player.subscribeTime, player.getTimeSnapshot)
+}

@@ -1,7 +1,6 @@
-import { EllipsisVertical, Heart, ListEnd, ListPlus, ListStart, ListX, Play, Radio, Share2, Trash, Users } from 'lucide-react'
+import { EllipsisVertical, Heart, ListEnd, ListPlus, ListStart, ListX, Play, Radio, Share2, Trash } from 'lucide-react'
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useInGuestJam } from '../../jam/guestJam'
 import { shareTrack } from '../../lib/share'
 import { useLibrary } from '../../library/store'
 import { player } from '../../player/engine'
@@ -24,8 +23,7 @@ interface TrackMenuControl {
 }
 
 /**
- * Botón «⋮» con las acciones de una canción. En la Jam de otro, «Agregar a la Jam» manda la canción a la cola compartida
- * (no a la de tu teléfono).
+ * Botón «⋮» con las acciones de una canción.
  */
 export function TrackMenu({ track, removeAction, onPlay, open: openProp, onOpenChange }: TrackMenuProps & TrackMenuControl) {
   const [openState, setOpenState] = useState(false)
@@ -80,7 +78,6 @@ function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePla
   const { favorites } = useLibrary()
   const { open } = useNowPlaying()
   usePlayer() // para saber al momento si está en la cola
-  const inJam = useInGuestJam() // en la Jam de otro, «agregar» va a la cola compartida (no a la de tu teléfono)
   const liked = favorites.some((t) => t.id === track.id)
   const queued = player.isQueued(track.id)
 
@@ -136,29 +133,21 @@ function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePla
       className="fixed z-40 lg:z-[60] w-64 rounded-lg bg-tarjeta-claro p-1 shadow-2xl shadow-black/60 ring-1 ring-contraste/10"
       style={position ?? { top: -9999, left: -9999 }}
     >
-      {onPlay && !inJam && (
+      {onPlay && (
         <MenuItem icon={<Play className="size-4" />} onSelect={run(onPlay)}>
           Reproducir
         </MenuItem>
       )}
-      {inJam ? (
-        <MenuItem icon={<Users className="size-4" />} onSelect={run(() => addToSiguientes(track))}>
-          Agregar a la Jam
+      <MenuItem icon={<ListStart className="size-4" />} onSelect={run(() => playNext(track))}>
+        Reproducir a continuación
+      </MenuItem>
+      <MenuItem icon={<ListEnd className="size-4" />} onSelect={run(() => addToSiguientes(track))}>
+        Agregar a la cola
+      </MenuItem>
+      {queued && (
+        <MenuItem icon={<ListX className="size-4" />} onSelect={run(() => removeFromQueue(track))}>
+          Quitar de la cola
         </MenuItem>
-      ) : (
-        <>
-          <MenuItem icon={<ListStart className="size-4" />} onSelect={run(() => playNext(track))}>
-            Reproducir a continuación
-          </MenuItem>
-          <MenuItem icon={<ListEnd className="size-4" />} onSelect={run(() => addToSiguientes(track))}>
-            Agregar a la cola
-          </MenuItem>
-          {queued && (
-            <MenuItem icon={<ListX className="size-4" />} onSelect={run(() => removeFromQueue(track))}>
-              Quitar de la cola
-            </MenuItem>
-          )}
-        </>
       )}
       <MenuItem icon={<Radio className="size-4" />} onSelect={run(() => startRadio(track, open))}>
         Iniciar radio

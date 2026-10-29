@@ -1,6 +1,5 @@
 import { ListMusic, Maximize2 } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router'
-import { useInGuestJam } from '../../jam/guestJam'
 import { useNowPlaying } from '../../player/useNowPlaying'
 import { usePlayer } from '../../player/usePlayer'
 import { coverSources } from '../../player/types'
@@ -50,11 +49,10 @@ function ExtraControls() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { open } = useNowPlaying()
-  const inJam = useInGuestJam() // en la Jam de otro, «Próximas en sonar» muestra su cola aunque aquí no suene nada
 
   return (
     <div className="flex items-center justify-end gap-1">
-      <IconButton label="Próximas en sonar" active={pathname === '/cola'} disabled={!current && !inJam} onClick={() => navigate('/cola')}>
+      <IconButton label="Próximas en sonar" active={pathname === '/cola'} disabled={!current} onClick={() => navigate('/cola')}>
         <ListMusic className="size-4" />
       </IconButton>
       <IconButton label="Sonando ahora en pantalla completa" disabled={!current} onClick={open}>

@@ -79,6 +79,8 @@ const MAX_FAILURES = 10 // canciones seguidas que no se pueden reproducir antes 
 // El reproductor nativo encadena solo estas canciones (aunque la app esté dormida en segundo plano).
 const NATIVE_AHEAD = 15 // próximas
 const NATIVE_BEHIND = 5 // las que ya sonaron, para «anterior» desde la notificación, los audífonos o el reloj
+const CLOCK_MS = 250 // la barra de progreso y la letra se actualizan 4 veces por segundo mientras suena
+const SPINNER_DELAY_MS = 150 // ▶ sobre una canción ya cargada: si no suena en este tiempo, sale la rueda de carga
 
 const OFFLINE = 'Sin conexión: la música sigue en cuanto vuelva internet.'
 const SKIPPED = 'No se pudo reproducir esta canción, pasando a la siguiente'
@@ -139,6 +141,9 @@ export class PlayerEngine {
   private lastSave = 0
   private listeners = new Set<() => void>()
   private snapshot: PlayerSnapshot
+  private clockListeners = new Set<() => void>() // la barra de progreso y la letra (subscribeTime)
+  private clock: number | undefined
+  private clockTime = 0
 
   constructor() {
     this.audio = new NativePlayerBackend({
@@ -168,6 +173,38 @@ export class PlayerEngine {
   }
 
   getSnapshot = () => this.snapshot
+
+  /**
+   * Tiempo de la canción para la barra de progreso y la letra: 4 veces por segundo mientras suena (y al instante al
+   * adelantar o cambiar de canción). Va aparte de getSnapshot para no redibujar toda la app con cada lectura.
+   */
+  subscribeTime = (listener: () => void) => {
+    this.clockListeners.add(listener)
+    this.updateClock()
+    return () => {
+      this.clockListeners.delete(listener)
+      this.updateClock()
+    }
+  }
+
+  getTimeSnapshot = () => this.clockTime
+
+  private updateClock() {
+    const run = this.clockListeners.size > 0 && this.status === 'playing'
+    if (run && this.clock === undefined) this.clock = window.setInterval(() => this.tickClock(), CLOCK_MS)
+    if (!run && this.clock !== undefined) {
+      window.clearInterval(this.clock)
+      this.clock = undefined
+    }
+    this.tickClock()
+  }
+
+  private tickClock() {
+    const time = this.current ? this.currentTime() : 0
+    if (time === this.clockTime) return
+    this.clockTime = time
+    this.clockListeners.forEach((listener) => listener())
+  }
 
   // ---- Reproducir listas ----
 
@@ -224,7 +261,7 @@ export class PlayerEngine {
    * La radio de la canción que suena llena «Recomendadas» y «Por Descubrir» (hasta 10 cada una) y, con la Fila Dinámica
    * encendida, pasa de ahí a la cola las que falten para que siempre haya 10 por sonar (tu cola + la lista; también al
    * quitar una), así la música no se detiene. La semilla es SIEMPRE la canción que suena: si la radio actual la trajo,
-   * sigue esa radio; si no (es de la lista que elegiste, de tu cola o la agregó alguien en la Jam), las que la Fila
+   * sigue esa radio; si no (es de la lista que elegiste o de tu cola), las que la Fila
    * Dinámica había agregado se quitan y se arma la radio de esa canción (1 de cada 5 del mismo artista, el resto de su
    * género o uno parecido, de cualquier año). Con «repetir» activado no se arma ninguna (la lista vuelve a empezar).
    */
@@ -341,7 +378,7 @@ export class PlayerEngine {
     return ids
   }
 
-  /** Lo que pasó a sonar o a la cola por cualquier camino (Buscar, la Jam…) sale de las pestañas. True si quitó algo. */
+  /** Lo que pasó a sonar o a la cola por cualquier camino (Buscar, Inicio…) sale de las pestañas. True si quitó algo. */
   private prunePools(): boolean {
     const playing = new Set([this.current?.id, ...this.queue.map((track) => track.id), ...this.upcomingIndexes().map((i) => this.context!.tracks[i].id)])
     let pruned = false
@@ -409,8 +446,9 @@ export class PlayerEngine {
   }
 
   // ---- Controles ----
+  // Mientras carga, el botón muestra la rueda: tocarlo pausa (como en Spotify).
   toggle() {
-    if (this.status === 'playing') this.pause()
+    if (this.status === 'playing' || this.status === 'loading' || this.status === 'buffering') this.pause()
     else this.play()
   }
 
@@ -418,12 +456,21 @@ export class PlayerEngine {
     const track = this.current
     if (!track) return
     if (this.loadedId !== track.id || this.status === 'error') {
-      this.loadCurrent(true, this.status === 'ended' ? 0 : this.time)
+      this.loadCurrent(true, this.status === 'ended' ? 0 : this.time) // pone 'loading': la rueda sale al instante
       return
     }
     if (this.status === 'ended') this.backend.seek(0)
+    this.userPaused = false
     this.backend.play()
     this.emit()
+    // Si el reproductor nativo no empieza enseguida (p. ej. tiene que volver a pedir el audio), sale la rueda de carga.
+    // Con un margen corto: si suena al instante, el botón pasa directo a ⏸ sin parpadear.
+    window.setTimeout(() => {
+      if (this.current !== track || this.userPaused || (this.status !== 'paused' && this.status !== 'ended')) return
+      this.status = 'buffering'
+      updatePlaybackState(this.status)
+      this.emit()
+    }, SPINNER_DELAY_MS)
   }
 
   pause() {
@@ -1094,6 +1141,7 @@ export class PlayerEngine {
   private emit() {
     this.snapshot = this.buildSnapshot()
     this.listeners.forEach((listener) => listener())
+    this.updateClock() // empieza o para el reloj de 250 ms según suene o no
   }
 
   private buildSnapshot(): PlayerSnapshot {

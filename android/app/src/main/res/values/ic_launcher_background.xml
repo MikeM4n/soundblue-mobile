@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Azul rey del logo de SoundBlue: llena toda la máscara del ícono (círculo, gota o cuadrado redondeado). -->
+    <color name="ic_launcher_background">#4169E1</color>
 </resources>

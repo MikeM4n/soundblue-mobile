@@ -1,4 +1,4 @@
-import { Plus, Settings as SettingsIcon, Users } from 'lucide-react'
+import { Plus, Settings as SettingsIcon } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link, Navigate } from 'react-router'
 import { Logo } from '../components/brand/Logo'
@@ -28,10 +28,10 @@ import { useNowPlaying } from '../player/useNowPlaying'
 // escuchas; la nuestra va por género) y «Versiones y remixes» son covers.
 const HIDDEN_SHELVES = /selecciones r[aá]pidas|versiones|covers/i
 const MIN_TRACKS = 4 // un estante de canciones con menos, tras los filtros, no se muestra
-const YOUR_TILES = 3 // accesos con tus canciones bajo «Tus me gusta», «Jam» y «Tu Top 50»
+const YOUR_TILES = 4 // accesos con tus canciones bajo «Tus me gusta» y «Tu Top 50» (6 en total: filas completas)
 
 /**
- * Inicio: saludo, accesos rápidos (Tus me gusta, Jam y tus canciones: las que te gustan o las últimas que sonaron), los
+ * Inicio: saludo, accesos rápidos (Tus me gusta, Tu Top 50 y tus canciones: las que te gustan o las últimas que sonaron), los
  * Modos de ambiente, «Para ti» («Selecciones rápidas» y «Muy sonadas» por género, «Tus artistas» con sus canciones más
  * conocidas y sugerencias según tus artistas, favoritas e historial; ver data/genres.ts, data/forYou.ts y
  * data/artistTop.ts) y las tendencias, solo de tus géneros. Todo en listas compactas que se deslizan de lado. La primera
@@ -108,15 +108,6 @@ export function Home() {
         <h1 className="text-2xl font-bold md:text-3xl">{greeting()}</h1>
         <ul className="mt-5 grid grid-cols-2 gap-2 xl:grid-cols-3" aria-label="Accesos rápidos">
           <QuickTile to="/coleccion/favoritos/todas" title="Tus me gusta" cover={<FavoritesCover className="size-14 md:size-16" />} />
-          <QuickTile
-            to="/jam"
-            title="Jam: en grupo"
-            cover={
-              <div className="grid size-14 shrink-0 place-items-center bg-linear-to-br from-acento to-acento-oscuro md:size-16">
-                <Users className="size-6 text-white" aria-hidden="true" />
-              </div>
-            }
-          />
           {/* Las 50 que más escuchaste aquí (data/history.ts). */}
           <QuickTile to="/coleccion/top/50" title="Tu Top 50" cover={<TopCover className="size-14 rounded-none md:size-16" />} />
           {yours.map((track) => (

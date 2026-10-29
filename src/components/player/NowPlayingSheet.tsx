@@ -1,15 +1,14 @@
-import { ChevronDown, ChevronUp, Heart, Users } from 'lucide-react'
+import { ChevronDown, ChevronUp, Heart } from 'lucide-react'
 import { useEffect, useRef, useState, useSyncExternalStore, type PointerEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { lyricsOf, type Lyrics } from '../../data/lyrics'
-import { useGuestJam } from '../../jam/guestJam'
 import { useLibrary } from '../../library/store'
 import { useSettings } from '../../lib/settings'
 import { usePreventTouchMove } from '../../lib/usePreventTouchMove'
 import { player } from '../../player/engine'
 import { sheetState, stagePulse, youtubeView, type YouTubeView } from '../../player/stage'
 import { coverSources, type Track } from '../../player/types'
-import { usePlayer } from '../../player/usePlayer'
+import { usePlaybackTime, usePlayer } from '../../player/usePlayer'
 import { TrackMenu } from '../tracks/TrackMenu'
 import { toggleFavorite } from '../tracks/trackActions'
 import { Cover } from '../ui/Cover'
@@ -162,7 +161,7 @@ export function NowPlayingSheet() {
       <section aria-label="Reproductor" className="relative flex min-h-0 min-w-0 flex-col pt-[env(safe-area-inset-top)] pb-2 lg:pr-4">
         <header className="flex w-full shrink-0 items-center justify-between gap-2 p-4 lg:justify-normal lg:gap-1 lg:px-2 lg:py-2">
           {/* Izquierda: minimizar (en el PC, del ancho de los botones de la derecha, para que el título quede centrado);
-              centro (PC): de dónde suena; derecha: «Canción | Letra», Jam y ⋮. Minimizar: deslizar hacia abajo o, en el
+              centro (PC): de dónde suena; derecha: «Canción | Letra» y ⋮. Minimizar: deslizar hacia abajo o, en el
               PC, la tecla Esc. El selector va aquí arriba para que la letra tenga todo el alto del centro. */}
           <div className="shrink-0 lg:w-20">
             <IconButton label="Minimizar reproductor" onClick={close} className="text-white">
@@ -175,7 +174,6 @@ export function NowPlayingSheet() {
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {!hideViewToggle && <ViewToggle view={view} />}
-            <JamButton />
             <TrackMenu track={current} />
           </div>
         </header>
@@ -217,16 +215,6 @@ export function NowPlayingSheet() {
 /**
  * Aviso sobre reproducción de audio en segundo plano.
  */
-function JamButton() {
-  const navigate = useNavigate()
-  const { code } = useGuestJam()
-  return (
-    <IconButton label="Jam: escuchar en grupo" onClick={() => navigate(code ? `/jam/${code}` : '/jam', { replace: true })} className="text-white">
-      <Users className="size-6" />
-    </IconButton>
-  )
-}
-
 const LYRICS_LEAD_S = 0.3 // la línea se resalta un poco antes de cantarse (como en Spotify)
 const USER_SCROLL_MS = 4000 // si desplazas la letra con el dedo, deja de seguir la canción por 4 s
 
@@ -236,7 +224,8 @@ const USER_SCROLL_MS = 4000 // si desplazas la letra con el dedo, deja de seguir
  * dedo (no minimiza «Sonando ahora») y muestra su fuente, como pide quien la licencia.
  */
 function LyricsPanel({ track }: { track: Track }) {
-  const { time, duration } = usePlayer() // el tiempo se actualiza 4 veces por segundo mientras suena
+  const { duration } = usePlayer()
+  const time = usePlaybackTime() // 4 veces por segundo mientras suena: la línea resaltada va al ritmo de la canción
   const [found, setFound] = useState<{ id: string; lyrics: Lyrics | null | 'error' } | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const userScrollUntil = useRef(0)

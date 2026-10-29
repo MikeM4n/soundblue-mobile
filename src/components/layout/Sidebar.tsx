@@ -1,4 +1,4 @@
-import { House, Library, Search, Settings as SettingsIcon, Users } from 'lucide-react'
+import { House, Library, Search, Settings as SettingsIcon } from 'lucide-react'
 import { Link, NavLink } from 'react-router'
 import { Logo } from '../brand/Logo'
 
@@ -16,7 +16,6 @@ export function Sidebar() {
         <ul className="space-y-1">
           <li><NavLink to="/" end className={linkClass}><House className="size-5 shrink-0" aria-hidden="true" />Inicio</NavLink></li>
           <li><NavLink to="/buscar" className={linkClass}><Search className="size-5 shrink-0" aria-hidden="true" />Buscar</NavLink></li>
-          <li><NavLink to="/jam" className={linkClass}><Users className="size-5 shrink-0" aria-hidden="true" />Jam</NavLink></li>
           <li><NavLink to="/biblioteca" className={linkClass}><Library className="size-5 shrink-0" aria-hidden="true" />Tu biblioteca</NavLink></li>
           <li><NavLink to="/ajustes" className={linkClass}><SettingsIcon className="size-5 shrink-0" aria-hidden="true" />Ajustes</NavLink></li>
         </ul>

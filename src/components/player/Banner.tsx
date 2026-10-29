@@ -4,7 +4,7 @@ import { useLibrary } from '../../library/store'
 import { player } from '../../player/engine'
 import { sheetState } from '../../player/stage'
 import { useNowPlaying } from '../../player/useNowPlaying'
-import { usePlayer } from '../../player/usePlayer'
+import { usePlaybackTime, usePlayer } from '../../player/usePlayer'
 import { toggleFavorite, vibrate } from '../tracks/trackActions'
 import { Backdrop } from './Backdrop'
 import { BarCarousel } from './BarCarousel'
@@ -16,7 +16,7 @@ import { BarCarousel } from './BarCarousel'
  * arriba o tocar = abrir «Sonando ahora».
  */
 export function Banner() {
-  const { current, status, time, duration } = usePlayer()
+  const { current, status, duration } = usePlayer()
   const { favorites } = useLibrary()
   const sheet = useSyncExternalStore(sheetState.subscribe, sheetState.get)
   const { open } = useNowPlaying()
@@ -39,7 +39,6 @@ export function Banner() {
 
   const playing = status === 'playing'
   const busy = status === 'loading' || status === 'buffering'
-  const progress = duration > 0 ? Math.min(100, (time / duration) * 100) : 0
   const liked = favorites.some((t) => t.id === current.id)
 
   return (
@@ -59,7 +58,7 @@ export function Banner() {
         </button>
         <button
           type="button"
-          aria-label={playing ? 'Pausar' : 'Reproducir'}
+          aria-label={playing || busy ? 'Pausar' : 'Reproducir'}
           onClick={() => {
             vibrate() // vibración corta al dar ▶ o ⏸ (si el teléfono la tiene)
             player.toggle()
@@ -69,9 +68,18 @@ export function Banner() {
           {busy ? <LoaderCircle className="size-6 animate-spin" /> : playing ? <Pause className="size-6 fill-current" /> : <Play className="size-6 fill-current" />}
         </button>
       </div>
-      <div className="relative h-0.5 bg-contraste/15" aria-hidden="true">
-        <div className="h-full bg-acento" style={{ width: `${progress}%` }} />
-      </div>
+      <ProgressLine duration={duration} />
+    </div>
+  )
+}
+
+/** La línea de progreso, aparte: se redibuja 4 veces por segundo sin redibujar toda la barra. */
+function ProgressLine({ duration }: { duration: number }) {
+  const time = usePlaybackTime()
+  const progress = duration > 0 ? Math.min(100, (time / duration) * 100) : 0
+  return (
+    <div className="relative h-0.5 bg-contraste/15" aria-hidden="true">
+      <div className="h-full bg-acento" style={{ width: `${progress}%` }} />
     </div>
   )
 }

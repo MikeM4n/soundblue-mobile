@@ -73,6 +73,7 @@ public final class PlaybackService extends MediaSessionService {
     private String retried; // canción a la que ya se le pidió otra URL tras un error
     private String skippedFailed; // la que se quitó por fallar: el cambio de canción que sigue se debe a eso
     private boolean waitingForNetwork;
+    private boolean loading; // dentro de `load`: los estados intermedios no se avisan (se avisa uno al final)
     private int generation; // número del último `load` de la app: con él, la app descarta avisos de antes
 
     static PlaybackService get() {
@@ -170,6 +171,19 @@ public final class PlaybackService extends MediaSessionService {
         retried = null;
         skippedFailed = null;
         waitingForNetwork = false;
+        // Al cambiar la cola y luego `playWhenReady`, ExoPlayer pasaría un momento por «en pausa» y la app quitaría la
+        // rueda de carga mientras NewPipe extrae el audio. Se avisa un solo estado al final: «cargando» (o «en pausa»).
+        loading = true;
+        try {
+            loadItems(before, current, after, startMs, autoplay, volume);
+        } finally {
+            loading = false;
+        }
+        notifyState();
+    }
+
+    private void loadItems(List<MediaItem> before, MediaItem current, List<MediaItem> after, long startMs,
+                           boolean autoplay, float volume) {
         player.setVolume(volume);
         final int target = indexNearCurrent(current.mediaId);
         if (target == C.INDEX_UNSET) {
@@ -261,6 +275,10 @@ public final class PlaybackService extends MediaSessionService {
         if (same) return;
         if (current > 0) player.removeMediaItems(0, current);
         if (!before.isEmpty()) player.addMediaItems(0, before);
+    }
+
+    private void notifyState() {
+        if (events != null && !loading) events.onStateChanged();
     }
 
     private void trimBehind() {
@@ -392,17 +410,17 @@ public final class PlaybackService extends MediaSessionService {
                 failures = 0;
                 prefetchNext();
             }
-            if (events != null) events.onStateChanged();
+            notifyState();
         }
 
         @Override
         public void onPlaybackStateChanged(int playbackState) {
-            if (events != null) events.onStateChanged();
+            notifyState();
         }
 
         @Override
         public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
-            if (events != null) events.onStateChanged();
+            notifyState();
         }
 
         @Override
