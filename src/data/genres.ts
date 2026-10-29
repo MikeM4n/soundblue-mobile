@@ -185,6 +185,15 @@ export async function sourceTracks(source: GenreSource, limit = 40): Promise<Tra
   return tracks.filter((track) => [...genresOf(track, index)].some((genre) => accepted.has(genre))).slice(0, limit)
 }
 
+/**
+ * Para la precarga de la bienvenida (data/prefetch.ts): trae lo que `sourceTracks` va a leer (sus playlists y las 2
+ * primeras), que queda en la caché de YouTube Music. No espera al índice de géneros: ese se arma aparte.
+ */
+export async function prefetchSource(source: GenreSource): Promise<void> {
+  const playlists = (await sourcePlaylists(source)).slice(0, PLAYLISTS_PER_LIST)
+  await Promise.all(playlists.map((playlist) => ytmPage(playlist.id).catch(() => null)))
+}
+
 /** Canciones de un modo: un subfiltro, o todos mezclados («Todo»), sin las de un género que choca con el del modo. */
 export async function modeTracks(mode: Mode, filterKey: string | null, limit = 50): Promise<Track[]> {
   const sources = filterKey ? mode.filters.filter((f) => f.key === filterKey) : mode.filters

@@ -1,21 +1,27 @@
-import { Download, Heart, ListPlus } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { Heart, Music, Play, SkipBack, SkipForward } from 'lucide-react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ArtistPicker } from '../components/tastes/ArtistPicker'
 import { GenrePicker } from '../components/tastes/GenrePicker'
+import { Switch } from '../components/ui/Switch'
+import { favoriteGenres } from '../data/favoriteGenres'
+import { cancelPrefetch, schedulePrefetch } from '../data/prefetch'
 import { readTastes, saveTastes, SUGGESTED_ARTISTS } from '../data/tastes'
 import type { YtmCard } from '../data/ytmusic'
 import { onboarding } from '../lib/onboarding'
+import { settings, useSettings } from '../lib/settings'
 
-const STEPS = 3
+const STEPS = 4
 
 /**
  * Bienvenida, a pantalla completa la primera vez que abres la app o cuando la pides en Ajustes (lib/onboarding.ts):
- * tus artistas, tus ritmos y cómo traer tu música. Lo que elijas se guarda igual que en «Cambiar tus artistas» y en
- * Ajustes → Mis Géneros Favoritos, y «Empezar a escuchar» lleva a Inicio.
+ * tus artistas, tus ritmos, la Fila Dinámica y el widget. Lo que elijas se guarda igual que en «Cambiar tus artistas»,
+ * en Ajustes → Mis Géneros Favoritos y en Ajustes → Fila Dinámica, y «Empezar a escuchar» lleva a Inicio. Mientras
+ * eliges artistas y géneros, lo que Inicio va a mostrar se precarga en segundo plano (data/prefetch.ts).
  */
 export function Onboarding() {
   const navigate = useNavigate()
+  const { dynamicQueue } = useSettings()
   const [step, setStep] = useState(0)
   const [artists, setArtists] = useState<YtmCard[]>(() => readTastes()?.artists ?? [])
 
@@ -27,7 +33,13 @@ export function Onboarding() {
     window.scrollTo(0, 0)
   }
 
+  const pickArtists = (next: YtmCard[]) => {
+    setArtists(next)
+    schedulePrefetch(next, favoriteGenres.get())
+  }
+
   const finish = () => {
+    cancelPrefetch()
     navigate('/', { replace: true })
     onboarding.finish()
   }
@@ -44,7 +56,7 @@ export function Onboarding() {
             <p className="mt-2 text-texto-sec">
               Elige {SUGGESTED_ARTISTS} o más y te recomendaremos música. Al tocar uno aparecen otros parecidos; tócalo otra vez para quitarlo.
             </p>
-            <ArtistPicker selected={artists} onChange={setArtists} />
+            <ArtistPicker selected={artists} onChange={pickArtists} />
           </>
         )}
         {step === 1 && (
@@ -53,26 +65,32 @@ export function Onboarding() {
             <p className="mt-2 text-texto-sec">
               Con ellos se arman tus selecciones, las recomendaciones y la cola. Puedes cambiarlos cuando quieras en Ajustes.
             </p>
-            <GenrePicker className="mt-6" />
+            <GenrePicker className="mt-6" onChange={(genres) => schedulePrefetch(artists, genres)} />
           </>
         )}
         {step === 2 && (
           <>
-            <h1 className="mt-1 text-3xl font-bold md:text-4xl">Importa tu música</h1>
-            <p className="mt-2 text-texto-sec">Trae a SoundBlue lo que ya escuchas y arma tus propias listas.</p>
-            <ul className="mt-6 max-w-xl space-y-3">
-              <Tip icon={<Download className="size-5" />} title="Importa playlists de YouTube">
-                En Tu biblioteca toca «Importar playlist» y pega el enlace de una playlist pública de YouTube o YouTube Music: sus
-                canciones pasan a Tus me gusta.
-              </Tip>
-              <Tip icon={<ListPlus className="size-5" />} title="Crea tus listas">
-                En Tu biblioteca toca + para crear una playlist y agrégale canciones con «Agregar a playlist» en el menú ⋮ de
-                cualquier canción.
-              </Tip>
-              <Tip icon={<Heart className="size-5" />} title="Guarda lo que te gusta">
-                Toca el corazón mientras suena una canción y queda en Tus me gusta.
-              </Tip>
-            </ul>
+            <h1 className="mt-1 text-3xl font-bold md:text-4xl">Que la música no pare</h1>
+            <p className="mt-2 text-texto-sec">Cuando se acaba lo que elegiste, siguen sonando canciones parecidas.</p>
+            <Switch
+              className="mt-6 max-w-xl rounded-lg bg-tarjeta p-4"
+              label="Activar Fila Dinámica"
+              note="La cola nunca baja de 10: si se acaba la lista, entran canciones de «Recomendadas». Puedes cambiarlo en Ajustes."
+              checked={dynamicQueue}
+              onChange={(on) => settings.set({ dynamicQueue: on })}
+            />
+          </>
+        )}
+        {step === 3 && (
+          <>
+            <h1 className="mt-1 text-3xl font-bold md:text-4xl">Tu música desde el inicio</h1>
+            <p className="mt-2 text-texto-sec">Añade el widget a tu inicio para controlar la música rápido. (Funciona en Android 12 o superior)</p>
+            <WidgetPreview />
+            <ol className="mt-6 max-w-xl list-decimal space-y-2 pl-5 text-sm text-texto-sec">
+              <li>Mantén presionado un espacio vacío de tu pantalla de inicio.</li>
+              <li>Toca «Widgets» y busca SoundBlue.</li>
+              <li>Arrástralo a donde quieras tenerlo.</li>
+            </ol>
           </>
         )}
       </main>
@@ -103,16 +121,23 @@ export function Onboarding() {
   )
 }
 
-function Tip({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
+/** El widget de Android en pequeño (los colores de widget/SoundBlueWidget.kt): carátula, canción, ⏮ ▶ ⏭ y ♥. */
+function WidgetPreview() {
   return (
-    <li className="flex gap-4 rounded-lg bg-tarjeta p-4">
-      <span className="grid size-10 shrink-0 place-items-center rounded-full bg-acento text-white" aria-hidden="true">
-        {icon}
+    <div className="mt-6 flex max-w-sm items-center gap-3 rounded-3xl bg-[#1f1f1f] p-3 text-white shadow-lg" aria-hidden="true">
+      <span className="grid size-12 shrink-0 place-items-center rounded-lg bg-acento">
+        <Music className="size-6" />
       </span>
-      <span>
-        <span className="block font-bold">{title}</span>
-        <span className="mt-1 block text-sm text-texto-sec">{children}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-semibold">Tu canción</span>
+        <span className="block truncate text-xs text-white/60">Tu artista</span>
       </span>
-    </li>
+      <SkipBack className="size-5 shrink-0" fill="currentColor" />
+      <span className="grid size-10 shrink-0 place-items-center rounded-full bg-white text-black">
+        <Play className="size-5" fill="currentColor" />
+      </span>
+      <SkipForward className="size-5 shrink-0" fill="currentColor" />
+      <Heart className="size-5 shrink-0 text-[#4169e1]" fill="currentColor" />
+    </div>
   )
 }

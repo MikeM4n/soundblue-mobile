@@ -39,6 +39,14 @@
         gap: 18px;
         background: #000;
         transition: opacity 450ms ease;
+        /* Tope de 2 s: si src/lib/splash.ts no la quitó antes (la interfaz tarda), se desvanece sola. */
+        animation: splash-tope 450ms ease 1550ms forwards;
+      }
+      @keyframes splash-tope {
+        to {
+          opacity: 0;
+          visibility: hidden;
+        }
       }
       #splash.splash-out {
         opacity: 0;

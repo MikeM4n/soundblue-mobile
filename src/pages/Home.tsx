@@ -9,6 +9,7 @@ import { FavoritesCover, TopCover } from '../components/ui/LibraryItem'
 import { ModeTiles } from '../components/ui/ModeTiles'
 import { CardPages, TrackPages } from '../components/ui/RowPages'
 import { Section } from '../components/ui/Section'
+import { SkeletonRows, SkeletonSection } from '../components/ui/Skeleton'
 import { computeForYou, type ForYou } from '../data/forYou'
 import { favoriteGenres, useFavoriteGenres } from '../data/favoriteGenres'
 import { genreIndex, type GenreKey } from '../data/genreIndex'
@@ -93,6 +94,7 @@ export function Home() {
   // Estrictamente lo tuyo: las que te gustan (la más reciente primero) y, si faltan, las últimas que sonaron.
   const yours = unique([...favorites, ...listening.entries().map((entry) => entry.track)]).slice(0, YOUR_TILES)
   const shown = new Set(mine?.shownIds)
+  const artists = mine?.artists ?? tastes.artists
   const trends = Array.isArray(ytm) && mine ? forYourGenres(ytm, mine, shown) : null
 
   return (
@@ -132,7 +134,7 @@ export function Home() {
 
       {/* «Para ti»: sugerencias propias (no son recomendaciones oficiales de YouTube Music). */}
       <div aria-label="Para ti">
-        {mine === null && <p className="mt-6 px-4 text-sm text-texto-sec md:px-6">Preparando tus sugerencias…</p>}
+        {mine === null && <SkeletonSection label="Preparando tus sugerencias…" />}
         {mine?.shelves.map((shelf) => (
           <Section key={shelf.key} title={shelf.title}>
             <p className="-mt-2 mb-1 px-4 text-sm text-texto-sec md:px-6">{shelf.note}</p>
@@ -146,14 +148,15 @@ export function Home() {
           </Section>
         )}
         <Section title="Tus artistas">
-          {mine && mine.artists.length > 0 && <ArtistTopSongsRow artists={mine.artists} onPlay={playArtist} />}
+          {/* Son los que elegiste: salen enseguida, sin esperar a «Para ti» (sus canciones ya vienen de la bienvenida). */}
+          {artists.length > 0 && <ArtistTopSongsRow artists={artists} onPlay={playArtist} />}
           <Link to="/gustos" className="mx-4 mt-2 inline-flex items-center gap-2 rounded-full bg-contraste/10 px-4 py-2 text-sm font-semibold hover:bg-contraste/15 md:mx-6">
             <Plus className="size-4" aria-hidden="true" />{tastes.artists.length ? 'Agregar más artistas' : 'Elegir tus artistas'}
           </Link>
         </Section>
       </div>
 
-      {ytm === null && <p className="mt-8 px-4 text-sm text-texto-sec md:px-6">Cargando tendencias…</p>}
+      {(ytm === null || (ytm !== 'error' && !mine)) && <SkeletonSection label="Cargando tendencias…" />}
       {trends && trends.length > 0 && (
         <div aria-label="Tendencias">
           <Kicker>Tendencias · solo de tus géneros</Kicker>
@@ -248,7 +251,7 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
         </div>
       )}
       <Chips label="Género de las selecciones rápidas" options={genres} value={genre} onChange={setGenre} />
-      {list === undefined && <p className="px-4 text-sm text-texto-sec md:px-6">Cargando…</p>}
+      {list === undefined && <SkeletonRows />}
       {list === 'error' && <p className="px-4 text-sm text-texto-sec md:px-6">No se pudo cargar este género. Revisa tu conexión.</p>}
       {tracks.length > 0 && <TrackPages key={genre} tracks={tracks} onPlay={(i) => onPlay(tracks[i])} />}
     </Section>
@@ -275,7 +278,7 @@ function GenrePlaylists() {
     <Section title="Muy sonadas">
       <p className="-mt-2 mb-3 px-4 text-sm text-texto-sec md:px-6">Las listas más escuchadas de cada género</p>
       <Chips label="Género de las listas muy sonadas" options={POPULAR_GENRES} value={genre} onChange={setGenre} />
-      {list === undefined && <p className="px-4 text-sm text-texto-sec md:px-6">Cargando…</p>}
+      {list === undefined && <SkeletonRows />}
       {list === 'error' && <p className="px-4 text-sm text-texto-sec md:px-6">No se pudo cargar este género. Revisa tu conexión.</p>}
       {Array.isArray(list) && <CardPages key={genre} cards={list} />}
     </Section>

@@ -5,6 +5,7 @@ import { artistTopSongs, type ArtistTop } from '../../data/artistTop'
 import type { YtmCard } from '../../data/ytmusic'
 import type { Track } from '../../player/types'
 import { Cover } from '../ui/Cover'
+import { SkeletonRows } from '../ui/Skeleton'
 import { TrackList } from './TrackList'
 
 const MAX_ARTISTS = 8
@@ -46,7 +47,7 @@ function ArtistTopSongs({ artist, onPlay }: { artist: YtmCard; onPlay: OnPlay })
         <h3 className="min-w-0 flex-1 truncate text-lg font-bold">{title}</h3>
         <ChevronRight className="size-5 shrink-0 text-texto-sec" aria-hidden="true" />
       </Link>
-      {top === null && <p className="px-4 pt-3 text-sm text-texto-sec">Cargando sus canciones…</p>}
+      {top === null && <SkeletonRows rows={3} label="Cargando sus canciones…" className="mt-1" />}
       {top && top.tracks.length > 0 && <TrackList tracks={top.tracks} numbered={false} plain onPlay={(i) => onPlay(artist, top.tracks[i])} />}
       {top?.notice && <p className="px-4 pt-2 text-xs text-texto-sec">{top.notice}</p>}
     </article>
