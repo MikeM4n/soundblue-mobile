@@ -80,39 +80,37 @@ private val DIMMED = Color(0x59FFFFFF) // controles apagados (nada cargado)
 private val PLAY_ICON = Color(0xFF0F0F0F)
 private val LIKED = Color(0xFF4169E1) // azul rey del logo: el corazón de Tus me gusta, como en la app
 
-// Siempre el mismo diseño: carátula a la izquierda y, a la derecha, la canción arriba y ⏮ ⏯ ⏭ ♥ repartidos debajo, todo
-// centrado a lo alto. Las medidas salen del tamaño real que le da el inicio (dimsFor).
-private val COMPACT_HEIGHT = 72.dp // 4×1 de la mayoría de los inicios
-private val LARGE_HEIGHT = 96.dp // 4×1 con filas altas, o estirado
-private val LARGE_BUTTON = 48.dp
+// Siempre el mismo diseño: la carátula de borde a borde a lo alto, a la izquierda, y a la derecha «Canción - Artista» en
+// una línea con ⏮ ⏯ ⏭ ♥ debajo, juntos y centrados a lo alto. Las medidas salen del tamaño real del widget (dimsFor).
+private val LARGE_HEIGHT = 96.dp // 4×1 con filas altas, o estirado: texto de 16 sp
+private val MIN_BUTTON = 28.dp
+private val MAX_BUTTON = 48.dp
 private val MAX_ART = 120.dp
-private val PADDING_X = 8.dp
-private val GUTTER = 10.dp // entre la carátula y la columna
+private val GUTTER = 12.dp // entre la carátula y el texto
+private val PADDING_END = 8.dp
 
-/** Medidas de un tamaño del widget. Sin `artist`, solo cabe el título. */
-private class Dims(val art: Dp, val button: Dp, val icon: Dp, val title: TextUnit, val artist: TextUnit?, val padding: Dp, val spacer: Dp)
+/** Medidas de un tamaño del widget. `padding`: arriba y abajo del texto y los botones; `spacer`: entre ellos. */
+private class Dims(val art: Dp, val button: Dp, val icon: Dp, val text: TextUnit, val padding: Dp, val spacer: Dp)
 
-private fun dimsFor(size: DpSize): Dims = when {
-    // 4 + 19 + 16 + 4 + 48 + 4 = 95 dp de alto. La carátula, tan grande como quepa (hasta 120 dp) sin quitarles a los
-    // botones sus 48 dp de ancho; si ni así caben (widget angosto), los botones se achican.
-    size.height >= LARGE_HEIGHT -> {
-        val art = minOf(size.height - 8.dp, size.width - PADDING_X * 2 - GUTTER - LARGE_BUTTON * 4, MAX_ART).coerceAtLeast(48.dp)
-        val button = minOf(LARGE_BUTTON, (size.width - PADDING_X * 2 - GUTTER - art) / 4)
-        Dims(art, button, button * 2 / 3, 14.sp, 12.sp, 4.dp, 4.dp)
-    }
-    // 3 + 16 + 14 + 36 + 3 = 72 dp (el de la 1.6.4).
-    size.height >= COMPACT_HEIGHT -> Dims(44.dp, 36.dp, 24.dp, 12.sp, 10.sp, 3.dp, 0.dp)
-    // 3 + 16 + 32 + 3 = 54 dp: sin la línea del artista.
-    else -> Dims(40.dp, 32.dp, 22.dp, 12.sp, null, 3.dp, 0.dp)
+private fun dimsFor(size: DpSize): Dims {
+    val large = size.height >= LARGE_HEIGHT
+    val text = if (large) 16.sp else 14.sp
+    val line = if (large) 22.dp else 19.dp // alto de una línea de ese texto
+    val padding = if (large) 8.dp else 4.dp
+    val spacer = if (large) 4.dp else 0.dp
+    // Botones tan grandes como quepan bajo el texto (de 28 a 48 dp). La carátula, cuadrada con el alto del widget (hasta
+    // 120 dp) sin quitarles a los botones su ancho; si el widget es muy alto para su ancho, se recorta a los lados.
+    val tallest = (size.height - padding * 2 - line - spacer).coerceIn(MIN_BUTTON, MAX_BUTTON)
+    val art = minOf(size.height, MAX_ART, size.width - GUTTER - PADDING_END - tallest * 4).coerceAtLeast(40.dp)
+    val button = minOf(tallest, (size.width - art - GUTTER - PADDING_END) / 4) // widget angosto: se achican
+    return Dims(art, button, button * 2 / 3, text, padding, spacer)
 }
 
 /**
- * Widget de SoundBlue (Jetpack Glance), como el de YouTube Music: a la izquierda la carátula y a la derecha título y
- * artista, con ⏮ ⏯ ⏭ ♥ debajo. Los botones le mandan la orden a PlaybackService con un MediaController
+ * Widget de SoundBlue (Jetpack Glance), como el de YouTube Music: a la izquierda la carátula y a la derecha
+ * «Canción - Artista» con ⏮ ⏯ ⏭ ♥ debajo. Los botones le mandan la orden a PlaybackService con un MediaController
  * (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene nada cargado
  * (p. ej. cerraste la app), se ve la última canción que sonó y ▶ la vuelve a poner a sonar sin abrir la app.
- * El texto largo termina en «…» (maxLines = 1; el estilo de texto de Glance trae ellipsize="end"): un widget no puede
- * tener marquesina.
  */
 class SoundBlueWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Exact
@@ -135,13 +133,17 @@ private fun WidgetContent(snapshot: WidgetSnapshot) {
     val dims = dimsFor(LocalSize.current)
     val openApp = actionStartActivity<MainActivity>()
     Row(
-        modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(horizontal = PADDING_X, vertical = dims.padding),
+        modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Artwork(snapshot.artwork, dims.art, GlanceModifier.clickable(openApp))
+        // Pegada arriba, abajo y a la izquierda: las esquinas redondeadas del widget la recortan.
+        Artwork(snapshot.artwork, GlanceModifier.fillMaxHeight().width(dims.art).clickable(openApp), dims.art)
         Spacer(GlanceModifier.width(GUTTER))
         // Texto y botones juntos, centrados a lo alto (como Arrangement.Center): sin huecos aunque el widget sea alto.
-        Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
+        Column(
+            modifier = GlanceModifier.defaultWeight().fillMaxHeight().padding(end = PADDING_END, top = dims.padding, bottom = dims.padding),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             SongText(snapshot, dims, GlanceModifier.fillMaxWidth().clickable(openApp))
             if (dims.spacer > 0.dp) Spacer(GlanceModifier.height(dims.spacer))
             Controls(snapshot, dims)
@@ -149,23 +151,24 @@ private fun WidgetContent(snapshot: WidgetSnapshot) {
     }
 }
 
-/** Título y artista, una línea cada uno (solo el título si no cabe más). */
+/**
+ * «Canción - Artista» en una línea. Si no cabe, termina en «…» (maxLines = 1; el estilo de texto de Glance trae
+ * ellipsize="end"): un widget no puede tener marquesina.
+ */
 @Composable
 private fun SongText(snapshot: WidgetSnapshot, dims: Dims, modifier: GlanceModifier) {
-    Column(modifier = modifier) {
-        Text(
-            text = snapshot.title ?: "SoundBlue",
-            style = TextStyle(color = ColorProvider(TEXT), fontSize = dims.title, fontWeight = FontWeight.Bold),
-            maxLines = 1,
-        )
-        if (dims.artist != null) {
-            Text(
-                text = if (snapshot.title != null) snapshot.artist.orEmpty() else "Elige algo para escuchar",
-                style = TextStyle(color = ColorProvider(TEXT_SECONDARY), fontSize = dims.artist),
-                maxLines = 1,
-            )
-        }
+    val title = snapshot.title
+    val text = when {
+        title == null -> "SoundBlue - Elige algo para escuchar"
+        snapshot.artist.isNullOrBlank() -> title
+        else -> "$title - ${snapshot.artist}"
     }
+    Text(
+        text = text,
+        modifier = modifier,
+        style = TextStyle(color = ColorProvider(TEXT), fontSize = dims.text, fontWeight = FontWeight.Medium),
+        maxLines = 1,
+    )
 }
 
 /** ⏮ ⏯ ⏭ ♥ con las medidas de `dims`, repartidos parejo en el ancho (cada uno en una cuarta parte, como SpaceEvenly). */
@@ -202,9 +205,9 @@ private fun RowScope.Slot(content: @Composable () -> Unit) {
     Box(modifier = GlanceModifier.defaultWeight(), contentAlignment = Alignment.Center) { content() }
 }
 
+/** La carátula (recortada para llenar `modifier`) o, si no hay, una nota musical. */
 @Composable
-private fun Artwork(artwork: Bitmap?, size: Dp, extra: GlanceModifier) {
-    val modifier = extra.size(size).cornerRadius(6.dp)
+private fun Artwork(artwork: Bitmap?, modifier: GlanceModifier, width: Dp) {
     if (artwork != null) {
         Image(ImageProvider(artwork), contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop)
         return
@@ -214,7 +217,7 @@ private fun Artwork(artwork: Bitmap?, size: Dp, extra: GlanceModifier) {
         Image(
             ImageProvider(R.drawable.ic_widget_music_note),
             contentDescription = null,
-            modifier = GlanceModifier.size(size / 2),
+            modifier = GlanceModifier.size(width / 3),
             colorFilter = ColorFilter.tint(ColorProvider(TEXT_SECONDARY)),
         )
     }
