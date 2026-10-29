@@ -182,6 +182,14 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         notifyListeners("trackFailed", data);
     }
 
+    /**
+     * ▶ del widget sobre la última canción guardada (lo pasa MainActivity): la app sigue con ella. Se retiene hasta que
+     * la app escuche, por si recién está arrancando.
+     */
+    void widgetPlay() {
+        notifyListeners("widgetPlay", new JSObject(), true);
+    }
+
     @Override
     public void onLikeToggle(String videoId) {
         final JSObject data = new JSObject();

@@ -1,7 +1,10 @@
 package com.soundblue.mobile;
 
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.PluginHandle;
 import com.getcapacitor.WebViewListener;
+import com.soundblue.mobile.widget.SoundBlueWidgetKt;
+import android.content.Intent;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebResourceRequest;
@@ -56,6 +59,22 @@ public class MainActivity extends BridgeActivity {
                     loadedWebView.evaluateJavascript(VISIBILITY_SCRIPT, null);
                 }
             });
+        }
+        if (savedInstanceState == null) handleWidgetIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        handleWidgetIntent(intent);
+    }
+
+    /** ▶ del widget sobre la última canción guardada: la app sigue con ella (evento «widgetPlay» de NativePlayer). */
+    private void handleWidgetIntent(Intent intent) {
+        if (intent == null || !SoundBlueWidgetKt.ACTION_WIDGET_PLAY.equals(intent.getAction()) || getBridge() == null) return;
+        final PluginHandle handle = getBridge().getPlugin("NativePlayer");
+        if (handle != null && handle.getInstance() instanceof PlaybackPlugin) {
+            ((PlaybackPlugin) handle.getInstance()).widgetPlay();
         }
     }
 }

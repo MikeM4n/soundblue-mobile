@@ -2,6 +2,7 @@ package com.soundblue.mobile.widget
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.annotation.OptIn
@@ -17,6 +18,7 @@ import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.Image
 import androidx.glance.ImageProvider
+import androidx.glance.LocalContext
 import androidx.glance.LocalSize
 import androidx.glance.action.Action
 import androidx.glance.action.ActionParameters
@@ -27,6 +29,7 @@ import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
@@ -72,20 +75,24 @@ private val DIMMED = Color(0x59FFFFFF) // controles apagados (nada cargado)
 private val PLAY_ICON = Color(0xFF0F0F0F)
 private val LIKED = Color(0xFF4169E1) // azul rey del logo: el corazón de Tus me gusta, como en la app
 
-// Angosto: ♥, ⏯ y ⏭. Desde 310 dp de ancho también ⏮.
+// Angosto: ⏯, ⏭ y ♥. Desde 310 dp de ancho también ⏮.
 private val COMPACT = DpSize(250.dp, 56.dp)
 private val WIDE = DpSize(310.dp, 56.dp)
 
+/** ▶ sobre la última canción guardada: abre la app y sigue con ella (MainActivity se lo pasa a la app). */
+const val ACTION_WIDGET_PLAY = "com.soundblue.mobile.WIDGET_PLAY"
+
 /**
  * Widget de SoundBlue (Jetpack Glance), al estilo del de YouTube Music: a la izquierda la carátula, al centro título y
- * artista (una línea cada uno), a la derecha ♥ ⏮ ⏯ ⏭. Los botones le mandan la orden a PlaybackService con un
- * MediaController (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Sin nada cargado se ve como
- * un reproductor vacío y ▶ abre la app para elegir música.
+ * artista (una línea cada uno), a la derecha ⏮ ⏯ ⏭ ♥. Los botones le mandan la orden a PlaybackService con un
+ * MediaController (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene
+ * nada cargado, se ve la última canción que sonó y ▶ abre la app para seguir con ella.
  */
 class SoundBlueWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(COMPACT, WIDE))
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
+        SoundBlueWidgetState.restore(context) // proceso nuevo: la última canción guardada
         provideContent {
             val snapshot by SoundBlueWidgetState.snapshot.collectAsState()
             WidgetContent(snapshot)
@@ -99,9 +106,10 @@ class SoundBlueWidgetReceiver : GlanceAppWidgetReceiver() {
 
 @Composable
 private fun WidgetContent(snapshot: WidgetSnapshot) {
+    val context = LocalContext.current
     val openApp = actionStartActivity<MainActivity>()
     val wide = LocalSize.current.width >= WIDE.width
-    val loaded = snapshot.title != null
+    val hasSong = snapshot.title != null
     Row(
         modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(start = 8.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -119,27 +127,30 @@ private fun WidgetContent(snapshot: WidgetSnapshot) {
                     maxLines = 1,
                 )
                 Text(
-                    text = if (loaded) snapshot.artist.orEmpty() else "Elige algo para escuchar",
+                    text = if (hasSong) snapshot.artist.orEmpty() else "Elige algo para escuchar",
                     style = TextStyle(color = ColorProvider(TEXT_SECONDARY), fontSize = 12.sp),
                     maxLines = 1,
                 )
             }
         }
-        if (loaded) {
-            ControlIcon(
-                icon = if (snapshot.liked) R.drawable.ic_widget_favorite else R.drawable.ic_widget_favorite_border,
-                label = if (snapshot.liked) "Quitar de Tus me gusta" else "Me gusta",
-                onClick = actionRunCallback<ToggleLikeAction>(),
-                tint = if (snapshot.liked) LIKED else TEXT,
-            )
+        val heart = if (snapshot.liked) R.drawable.ic_widget_favorite else R.drawable.ic_widget_favorite_border
+        val heartLabel = if (snapshot.liked) "Quitar de Tus me gusta" else "Me gusta"
+        if (snapshot.active) {
             if (wide) ControlIcon(R.drawable.ic_widget_previous, "Anterior", actionRunCallback<PreviousAction>())
             PlayButton(snapshot.playing, actionRunCallback<PlayPauseAction>())
             ControlIcon(R.drawable.ic_widget_next, "Siguiente", actionRunCallback<NextAction>())
+            ControlIcon(heart, heartLabel, actionRunCallback<ToggleLikeAction>(), tint = if (snapshot.liked) LIKED else TEXT)
         } else {
-            ControlIcon(R.drawable.ic_widget_favorite_border, "Me gusta", onClick = null, tint = DIMMED)
+            // El reproductor no tiene nada cargado: ▶ abre la app (y sigue con la última canción, si hay); el resto, apagado.
+            val resume = if (hasSong) {
+                actionStartActivity(Intent(context, MainActivity::class.java).setAction(ACTION_WIDGET_PLAY))
+            } else {
+                openApp
+            }
             if (wide) ControlIcon(R.drawable.ic_widget_previous, "Anterior", onClick = null, tint = DIMMED)
-            PlayButton(playing = false, onClick = openApp)
+            PlayButton(playing = false, onClick = resume)
             ControlIcon(R.drawable.ic_widget_next, "Siguiente", onClick = null, tint = DIMMED)
+            ControlIcon(heart, heartLabel, onClick = null, tint = DIMMED)
         }
     }
 }
@@ -220,13 +231,19 @@ class ToggleLikeAction : ActionCallback {
     }
 }
 
-/** Un control remoto de un solo uso: se conecta a PlaybackService, manda la orden y suelta la conexión. */
+/**
+ * Un control remoto de un solo uso: se conecta a PlaybackService, manda la orden y suelta la conexión. Llega a la misma
+ * MediaSession que la notificación, los audífonos y el reloj.
+ */
 private object WidgetControls {
     private const val RELEASE_DELAY_MS = 1_000L // que la orden llegue al servicio antes de soltar la conexión
 
     suspend fun send(context: Context, command: (MediaController) -> Unit) = withContext(Dispatchers.Main) {
-        val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val controller = MediaController.Builder(context, token).buildAsync().await()
+        // Con el contexto de la app: el que Glance pasa a los ActionCallback es el del BroadcastReceiver, que Android no
+        // deja enlazarse a un servicio (bindService lanza una excepción y la orden se perdía sin hacer nada).
+        val app = context.applicationContext
+        val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
+        val controller = MediaController.Builder(app, token).buildAsync().await()
         try {
             command(controller)
             delay(RELEASE_DELAY_MS)

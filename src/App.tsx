@@ -5,7 +5,7 @@ import { onboarding } from './lib/onboarding'
 import { startUpdateChecks } from './lib/updates'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
-import { startNativeLikes } from './player/nativeLikes'
+import { startNativeWidget } from './player/nativeWidget'
 import { usePlayerShortcuts } from './player/usePlayerShortcuts'
 import { Home } from './pages/Home'
 
@@ -27,7 +27,7 @@ export default function App() {
   usePlayerShortcuts()
   useEffect(() => {
     if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
-    startNativeLikes() // el corazón del widget de Android
+    startNativeWidget() // el widget de Android: su corazón y ▶ sobre la última canción
     // El índice de géneros de la radio (se guarda 7 días): se arma en segundo plano, después de cargar Inicio.
     const timer = window.setTimeout(() => void genreIndex(), 4000)
     return () => window.clearTimeout(timer)

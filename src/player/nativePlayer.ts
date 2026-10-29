@@ -51,6 +51,7 @@ interface NativePlayerPlugin {
   addListener(eventName: 'trackChanged', listener: (event: NativeState & { id: string; reason: TrackChange }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackFailed', listener: (event: PlaybackFailure & { seq?: number }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'likeToggle', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'widgetPlay', listener: () => void): Promise<PluginListenerHandle>
 }
 
 // android/app/src/main/java/com/soundblue/mobile/PlaybackPlugin.java
@@ -170,6 +171,11 @@ export class NativePlayerBackend implements MediaBackend {
   /** Se tocó el corazón del widget sobre la canción `id`. */
   onLikeToggle(listener: (id: string) => void) {
     if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('likeToggle', ({ id }) => listener(id))
+  }
+
+  /** Se tocó ▶ en el widget sobre la última canción guardada (el reproductor no tenía nada cargado): la app se abrió. */
+  onWidgetPlay(listener: () => void) {
+    if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('widgetPlay', listener)
   }
 
   /** Una canción que se le mandó al reproductor nativo (por si avanzó a una que el motor ya no tiene en su cola). */

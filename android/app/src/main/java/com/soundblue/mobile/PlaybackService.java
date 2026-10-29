@@ -165,7 +165,7 @@ public final class PlaybackService extends MediaSessionService {
     public void onDestroy() {
         instance = null;
         events = null;
-        SoundBlueWidgetState.publish(this, null, null, false, false, null); // sin servicio no hay nada que controlar
+        SoundBlueWidgetState.idle(this); // sin servicio no hay nada que controlar: queda la última canción, en pausa
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
             if (connectivity != null) connectivity.unregisterNetworkCallback(networkCallback);
@@ -519,7 +519,7 @@ public final class PlaybackService extends MediaSessionService {
         if (item == null) {
             widgetArtworkUri = null;
             widgetArtwork = null;
-            SoundBlueWidgetState.publish(this, null, null, false, false, null);
+            SoundBlueWidgetState.idle(this); // queda la última canción que sonó
             return;
         }
         final MediaMetadata metadata = item.mediaMetadata;
@@ -528,7 +528,7 @@ public final class PlaybackService extends MediaSessionService {
             widgetArtwork = null;
             loadWidgetArtwork(metadata);
         }
-        SoundBlueWidgetState.publish(this,
+        SoundBlueWidgetState.publish(this, item.mediaId,
                 metadata.title == null ? item.mediaId : metadata.title.toString(),
                 metadata.artist == null ? "" : metadata.artist.toString(),
                 !Util.shouldShowPlayButton(player), // ⏸ también mientras carga, como en la app
