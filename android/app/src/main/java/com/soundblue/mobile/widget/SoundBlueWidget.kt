@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.ColorFilter
@@ -43,7 +44,6 @@ import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
-import androidx.glance.layout.height
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
 import androidx.glance.layout.width
@@ -78,22 +78,33 @@ private val DIMMED = Color(0x59FFFFFF) // controles apagados (nada cargado)
 private val PLAY_ICON = Color(0xFF0F0F0F)
 private val LIKED = Color(0xFF4169E1) // azul rey del logo: el corazón de Tus me gusta, como en la app
 
-// Desde 90 dp de alto (una fila del inicio con el teléfono en vertical ya mide unos 100 dp): título y artista arriba y
-// ⏮ ⏯ ⏭ ♥ centrados debajo, más grandes. Más bajo (p. ej. con el teléfono acostado): todo en una fila, y si es angosto,
-// sin ⏮. Desde 310 dp de ancho, los botones van más separados.
-private val ROW = DpSize(250.dp, 56.dp)
-private val ROW_WIDE = DpSize(310.dp, 56.dp)
-private val STACKED = DpSize(250.dp, 90.dp)
-private val STACKED_WIDE = DpSize(310.dp, 90.dp)
+// Siempre el mismo diseño (carátula a la izquierda; a la derecha la canción arriba y ⏮ ⏯ ⏭ ♥ abajo); según el alto que
+// le dé el inicio cambian los tamaños (ver Dims):
+private val SMALL = DpSize(250.dp, 56.dp) // menos de 72 dp (p. ej. el teléfono acostado)
+private val COMPACT = DpSize(250.dp, 72.dp) // 4×1 de la mayoría de los inicios
+private val TALL = DpSize(250.dp, 90.dp) // 4×1 con filas altas, o estirado
+private val TALL_WIDE = DpSize(310.dp, 90.dp) // lo mismo, con aire entre los botones
+
+/** Medidas de un tamaño del widget. Sin `artist`, solo cabe el título. */
+private class Dims(val art: Dp, val button: Dp, val icon: Dp, val gap: Dp, val title: TextUnit, val artist: TextUnit?, val padding: Dp)
+
+private fun dimsFor(size: DpSize): Dims = when {
+    // 4 + 19 + 16 + 44 + 4 = 87 dp de alto; 4 × 44 dp caben justo en lo que queda de 250 dp de ancho.
+    size.height >= TALL.height -> Dims(48.dp, 44.dp, 28.dp, if (size.width >= TALL_WIDE.width) 8.dp else 0.dp, 14.sp, 12.sp, 4.dp)
+    // 3 + 16 + 14 + 36 + 3 = 72 dp.
+    size.height >= COMPACT.height -> Dims(44.dp, 36.dp, 24.dp, 8.dp, 12.sp, 10.sp, 3.dp)
+    // 3 + 16 + 32 + 3 = 54 dp: sin la línea del artista.
+    else -> Dims(40.dp, 32.dp, 22.dp, 8.dp, 12.sp, null, 3.dp)
+}
 
 /**
- * Widget de SoundBlue (Jetpack Glance), al estilo del de YouTube Music: a la izquierda la carátula y a la derecha título
- * y artista con ⏮ ⏯ ⏭ ♥ debajo (en una fila si no hay alto). Los botones le mandan la orden a PlaybackService con un
- * MediaController (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene
- * nada cargado (p. ej. cerraste la app), se ve la última canción que sonó y ▶ la vuelve a poner a sonar sin abrir la app.
+ * Widget de SoundBlue (Jetpack Glance), como el de YouTube Music: a la izquierda la carátula y a la derecha título y
+ * artista arriba, con ⏮ ⏯ ⏭ ♥ centrados abajo. Los botones le mandan la orden a PlaybackService con un MediaController
+ * (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene nada cargado
+ * (p. ej. cerraste la app), se ve la última canción que sonó y ▶ la vuelve a poner a sonar sin abrir la app.
  */
 class SoundBlueWidget : GlanceAppWidget() {
-    override val sizeMode = SizeMode.Responsive(setOf(ROW, ROW_WIDE, STACKED, STACKED_WIDE))
+    override val sizeMode = SizeMode.Responsive(setOf(SMALL, COMPACT, TALL, TALL_WIDE))
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         SoundBlueWidgetState.restore(context) // proceso nuevo: la última canción guardada
@@ -110,68 +121,54 @@ class SoundBlueWidgetReceiver : GlanceAppWidgetReceiver() {
 
 @Composable
 private fun WidgetContent(snapshot: WidgetSnapshot) {
-    val size = LocalSize.current
-    val wide = size.width >= ROW_WIDE.width
+    val dims = dimsFor(LocalSize.current)
     val openApp = actionStartActivity<MainActivity>()
-    if (size.height >= STACKED.height) {
-        // Carátula a la izquierda; a la derecha, la canción arriba y los botones centrados debajo.
-        Row(
-            modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Artwork(snapshot.artwork, GlanceModifier.clickable(openApp))
-            Spacer(GlanceModifier.width(10.dp))
-            Column(modifier = GlanceModifier.defaultWeight()) {
-                SongText(snapshot, GlanceModifier.fillMaxWidth().clickable(openApp))
-                Spacer(GlanceModifier.height(2.dp))
-                Row(
-                    modifier = GlanceModifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // 4 × 44 dp caben justo en lo que queda de 250 dp; más ancho, con aire entre uno y otro.
-                    Controls(snapshot, showPrevious = true, button = 44.dp, icon = 28.dp, gap = if (wide) 8.dp else 0.dp)
-                }
-            }
-        }
-    } else {
-        Row(
-            modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(start = 8.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    Row(
+        modifier = GlanceModifier.fillMaxSize().background(BACKGROUND).cornerRadius(16.dp).padding(horizontal = 8.dp, vertical = dims.padding),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Artwork(snapshot.artwork, dims.art, GlanceModifier.clickable(openApp))
+        Spacer(GlanceModifier.width(10.dp))
+        Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight()) {
+            SongText(snapshot, dims, GlanceModifier.fillMaxWidth().clickable(openApp))
+            // Como Arrangement.SpaceBetween (Glance no lo tiene): el texto arriba y los botones abajo.
+            Spacer(GlanceModifier.defaultWeight())
             Row(
-                modifier = GlanceModifier.defaultWeight().fillMaxHeight().clickable(openApp),
+                modifier = GlanceModifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Artwork(snapshot.artwork)
-                Spacer(GlanceModifier.width(10.dp))
-                SongText(snapshot, GlanceModifier.defaultWeight())
+                Controls(snapshot, dims)
             }
-            Controls(snapshot, showPrevious = wide, button = 40.dp, icon = 24.dp, gap = 0.dp)
         }
     }
 }
 
-/** Título y artista, una línea cada uno. */
+/** Título y artista, una línea cada uno (solo el título si no cabe más). */
 @Composable
-private fun SongText(snapshot: WidgetSnapshot, modifier: GlanceModifier) {
+private fun SongText(snapshot: WidgetSnapshot, dims: Dims, modifier: GlanceModifier) {
     Column(modifier = modifier) {
         Text(
             text = snapshot.title ?: "SoundBlue",
-            style = TextStyle(color = ColorProvider(TEXT), fontSize = 14.sp, fontWeight = FontWeight.Bold),
+            style = TextStyle(color = ColorProvider(TEXT), fontSize = dims.title, fontWeight = FontWeight.Bold),
             maxLines = 1,
         )
-        Text(
-            text = if (snapshot.title != null) snapshot.artist.orEmpty() else "Elige algo para escuchar",
-            style = TextStyle(color = ColorProvider(TEXT_SECONDARY), fontSize = 12.sp),
-            maxLines = 1,
-        )
+        if (dims.artist != null) {
+            Text(
+                text = if (snapshot.title != null) snapshot.artist.orEmpty() else "Elige algo para escuchar",
+                style = TextStyle(color = ColorProvider(TEXT_SECONDARY), fontSize = dims.artist),
+                maxLines = 1,
+            )
+        }
     }
 }
 
-/** ⏮ ⏯ ⏭ ♥, de `button` dp cada uno (con íconos de `icon` dp) y `gap` dp entre ellos. */
+/** ⏮ ⏯ ⏭ ♥ con las medidas de `dims`. */
 @Composable
-private fun Controls(snapshot: WidgetSnapshot, showPrevious: Boolean, button: Dp, icon: Dp, gap: Dp) {
+private fun Controls(snapshot: WidgetSnapshot, dims: Dims) {
+    val button = dims.button
+    val icon = dims.icon
+    val gap = dims.gap
     val context = LocalContext.current
     val heart = if (snapshot.liked) R.drawable.ic_widget_favorite else R.drawable.ic_widget_favorite_border
     val heartLabel = if (snapshot.liked) "Quitar de Tus me gusta" else "Me gusta"
@@ -185,10 +182,8 @@ private fun Controls(snapshot: WidgetSnapshot, showPrevious: Boolean, button: Dp
         }
         else -> actionStartActivity<MainActivity>() // nunca ha sonado nada: a elegir música
     }
-    if (showPrevious) {
-        ControlIcon(R.drawable.ic_widget_previous, "Anterior", if (snapshot.active) actionRunCallback<PreviousAction>() else null, button, icon)
-        Gap(gap)
-    }
+    ControlIcon(R.drawable.ic_widget_previous, "Anterior", if (snapshot.active) actionRunCallback<PreviousAction>() else null, button, icon)
+    Gap(gap)
     PlayButton(snapshot.active && snapshot.playing, play, button, icon)
     Gap(gap)
     ControlIcon(R.drawable.ic_widget_next, "Siguiente", if (snapshot.active) actionRunCallback<NextAction>() else null, button, icon)
@@ -204,8 +199,8 @@ private fun Gap(width: Dp) {
 }
 
 @Composable
-private fun Artwork(artwork: Bitmap?, extra: GlanceModifier = GlanceModifier) {
-    val modifier = extra.size(48.dp).cornerRadius(6.dp)
+private fun Artwork(artwork: Bitmap?, size: Dp, extra: GlanceModifier) {
+    val modifier = extra.size(size).cornerRadius(6.dp)
     if (artwork != null) {
         Image(ImageProvider(artwork), contentDescription = null, modifier = modifier, contentScale = ContentScale.Crop)
         return
@@ -215,7 +210,7 @@ private fun Artwork(artwork: Bitmap?, extra: GlanceModifier = GlanceModifier) {
         Image(
             ImageProvider(R.drawable.ic_widget_music_note),
             contentDescription = null,
-            modifier = GlanceModifier.size(24.dp),
+            modifier = GlanceModifier.size(size / 2),
             colorFilter = ColorFilter.tint(ColorProvider(TEXT_SECONDARY)),
         )
     }
