@@ -36,6 +36,10 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    // El APK sale como SoundBlue.apk (no app-debug.apk): es el nombre con el que se publica en GitHub (version.json).
+    applicationVariants.all { variant ->
+        variant.outputs.all { outputFileName = 'SoundBlue.apk' }
+    }
 }
 
 // Java compila para 21 (capacitor.build.gradle): Kotlin, igual.

@@ -22,6 +22,7 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(NewPipePlugin.class);
         registerPlugin(PlaybackPlugin.class);
+        registerPlugin(UpdatePlugin.class);
         StreamResolver.init();
         super.onCreate(savedInstanceState);
         final Bridge bridge = getBridge();

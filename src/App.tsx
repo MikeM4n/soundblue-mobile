@@ -1,8 +1,10 @@
+import { Capacitor } from '@capacitor/core'
 import { lazy, Suspense, useEffect, useSyncExternalStore } from 'react'
 import { Route, Routes, useLocation, type Location } from 'react-router'
 import { genreIndex } from './data/genreIndex'
 import { onboarding } from './lib/onboarding'
 import { startUpdateChecks } from './lib/updates'
+import { ApkUpdatePrompt } from './components/layout/ApkUpdatePrompt'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
 import { startNativeWidget } from './player/nativeWidget'
@@ -26,7 +28,8 @@ export default function App() {
   const onboarded = useSyncExternalStore(onboarding.subscribe, onboarding.seen)
   usePlayerShortcuts()
   useEffect(() => {
-    if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
+    // En la web, si hay una versión más nueva publicada, se recarga sola. En el APK la avisa ApkUpdatePrompt.
+    if (import.meta.env.PROD && !Capacitor.isNativePlatform()) startUpdateChecks()
     startNativeWidget() // el corazón del widget de Android
     // El índice de géneros de la radio (se guarda 7 días): se arma en segundo plano, después de cargar Inicio.
     const timer = window.setTimeout(() => void genreIndex(), 4000)
@@ -63,6 +66,7 @@ export default function App() {
         </Route>
       </Routes></Suspense>
       {location.pathname === '/reproduciendo' && <NowPlayingSheet />}
+      <ApkUpdatePrompt />
     </>
   )
 }

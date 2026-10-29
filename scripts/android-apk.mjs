@@ -3,7 +3,7 @@
 // los plugins a android/), así no queda nada de una compilación anterior  3. revisa que la copia tenga index.html y sus
 // JS  4. Gradle assembleDebug.
 // Usa JAVA_HOME y ANDROID_HOME si están definidos; si no, el JDK 21 y el SDK de %LOCALAPPDATA%\SoundBlueAndroidBuild.
-// Deja el resultado en SoundBlue-debug.apk.
+// Deja el resultado en SoundBlue.apk (Gradle ya lo nombra así: android/app/build.gradle).
 import { execSync } from 'node:child_process'
 import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -24,8 +24,9 @@ rmSync(PUBLIC, { recursive: true, force: true })
 run('npx cap sync android')
 checkPublic()
 run(process.platform === 'win32' ? '.\\gradlew.bat assembleDebug' : './gradlew assembleDebug', 'android')
-copyFileSync('android/app/build/outputs/apk/debug/app-debug.apk', 'SoundBlue-debug.apk')
-console.log('APK listo: SoundBlue-debug.apk')
+copyFileSync('android/app/build/outputs/apk/debug/SoundBlue.apk', 'SoundBlue.apk')
+rmSync('SoundBlue-debug.apk', { force: true }) // el nombre de antes de la 1.7.0: que no quede uno viejo a la mano
+console.log('APK listo: SoundBlue.apk')
 
 /** La interfaz que va dentro del APK: index.html y cada JS que pide, y ninguna dirección de servidor en la config. */
 function checkPublic() {
