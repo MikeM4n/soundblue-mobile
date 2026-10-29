@@ -27,7 +27,7 @@ export default function App() {
   usePlayerShortcuts()
   useEffect(() => {
     if (import.meta.env.PROD) startUpdateChecks() // si hay una versión más nueva publicada, se actualiza
-    startNativeWidget() // el widget de Android: su corazón y ▶ sobre la última canción
+    startNativeWidget() // el corazón del widget de Android
     // El índice de géneros de la radio (se guarda 7 días): se arma en segundo plano, después de cargar Inicio.
     const timer = window.setTimeout(() => void genreIndex(), 4000)
     return () => window.clearTimeout(timer)

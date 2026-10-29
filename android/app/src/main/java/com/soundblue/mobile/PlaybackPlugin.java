@@ -1,7 +1,6 @@
 package com.soundblue.mobile;
 
 import android.content.ComponentName;
-import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -40,9 +39,22 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
     private final List<Runnable> pending = new ArrayList<>();
     private ListenableFuture<MediaController> connecting;
     private MediaController controller; // mantiene el servicio vivo mientras la app está abierta
+    private static PlaybackPlugin active; // el de la app abierta, para el servicio que arranca el widget
+
+    /** La app abierta (o null): PlaybackService le avisa lo que pasa aunque lo haya arrancado el widget. */
+    static PlaybackService.Events listener() {
+        return active;
+    }
+
+    @Override
+    public void load() {
+        super.load();
+        active = this;
+    }
 
     @Override
     protected void handleOnDestroy() {
+        if (active == this) active = null;
         final PlaybackService service = PlaybackService.get();
         if (service != null) {
             service.clearEvents(this);
@@ -65,7 +77,7 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         }
         final List<MediaItem> before = items(call.getArray("history"));
         final List<MediaItem> after = items(call.getArray("upcoming"));
-        final MediaItem item = item(current);
+        final MediaItem item = PlaybackService.mediaItem(current);
         final long startMs = Math.max(0, Math.round(call.getDouble("start", 0.0) * 1000));
         final boolean autoplay = call.getBoolean("autoplay", true);
         final float volume = call.getFloat("volume", 1f);
@@ -138,9 +150,14 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         });
     }
 
+    /** También al abrir la app: si el reproductor ya estaba en marcha, desde aquí recibe sus avisos (sin arrancarlo). */
     @PluginMethod
     public void getState(final PluginCall call) {
-        main.post(() -> call.resolve(state()));
+        main.post(() -> {
+            final PlaybackService service = PlaybackService.get();
+            if (service != null) service.setEvents(this);
+            call.resolve(state());
+        });
     }
 
     /** Si la canción está en Tus me gusta (el corazón del widget). Sin el servicio en marcha no hay widget que pintar. */
@@ -180,14 +197,6 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         data.put("skipped", skipped);
         data.put("seq", service == null ? 0 : service.getGeneration());
         notifyListeners("trackFailed", data);
-    }
-
-    /**
-     * ▶ del widget sobre la última canción guardada (lo pasa MainActivity): la app sigue con ella. Se retiene hasta que
-     * la app escuche, por si recién está arrancando.
-     */
-    void widgetPlay() {
-        notifyListeners("widgetPlay", new JSObject(), true);
     }
 
     @Override
@@ -259,6 +268,13 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         data.put("position", player.getCurrentPosition() / 1000.0);
         data.put("duration", duration == C.TIME_UNSET ? 0 : duration / 1000.0);
         data.put("seq", service.getGeneration());
+        if (item != null) {
+            // Por si la app se abre con la música ya sonando (la arrancó el widget): sabe qué canción es.
+            final MediaMetadata metadata = item.mediaMetadata;
+            data.put("title", metadata.title == null ? "" : metadata.title.toString());
+            data.put("artist", metadata.artist == null ? "" : metadata.artist.toString());
+            data.put("artwork", metadata.artworkUri == null ? "" : metadata.artworkUri.toString());
+        }
         return data;
     }
 
@@ -280,24 +296,10 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         if (tracks == null) return items;
         for (int i = 0; i < tracks.length(); i++) {
             final JSONObject track = tracks.optJSONObject(i);
-            if (track != null && StreamResolver.VIDEO_ID.matcher(track.optString("id")).matches()) items.add(item(track));
+            if (track != null && StreamResolver.VIDEO_ID.matcher(track.optString("id")).matches()) {
+                items.add(PlaybackService.mediaItem(track));
+            }
         }
         return items;
-    }
-
-    /** La canción para ExoPlayer: su URL es soundblue://youtube/<id> y PlaybackService la resuelve con NewPipe al cargarla. */
-    private static MediaItem item(final JSONObject track) {
-        final String videoId = track.optString("id");
-        final MediaMetadata.Builder metadata = new MediaMetadata.Builder()
-                .setTitle(StreamResolver.safe(track.optString("title"), videoId))
-                .setArtist(StreamResolver.safe(track.optString("artist"), "SoundBlue"))
-                .setAlbumTitle(StreamResolver.safe(track.optString("album"), "SoundBlue"));
-        final String artwork = track.optString("artwork");
-        if (artwork.startsWith("https:")) metadata.setArtworkUri(Uri.parse(artwork));
-        return new MediaItem.Builder()
-                .setMediaId(videoId)
-                .setUri(PlaybackService.uriFor(videoId))
-                .setMediaMetadata(metadata.build())
-                .build();
     }
 }

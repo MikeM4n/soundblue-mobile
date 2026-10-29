@@ -1,12 +1,18 @@
 package com.soundblue.mobile;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.graphics.Bitmap;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,6 +20,8 @@ import android.util.Log;
 
 import androidx.annotation.Nullable;
 import androidx.annotation.OptIn;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.ServiceCompat;
 import androidx.core.content.ContextCompat;
 import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
@@ -41,6 +49,10 @@ import androidx.media3.session.SessionResult;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.soundblue.mobile.widget.SoundBlueWidgetState;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.net.ConnectException;
@@ -70,6 +82,12 @@ public final class PlaybackService extends MediaSessionService {
     /** Comando de sesión del corazón del widget: «Me gusta» / quitar de Tus me gusta la que suena. */
     public static final String ACTION_TOGGLE_LIKE = "com.soundblue.mobile.TOGGLE_LIKE";
     private static final SessionCommand TOGGLE_LIKE = new SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY);
+    /** ▶ del widget con la app cerrada: Android arranca el servicio en primer plano y suena la última cola guardada. */
+    public static final String ACTION_RESUME_FROM_WIDGET = "com.soundblue.mobile.RESUME_FROM_WIDGET";
+    private static final String QUEUE_PREFS = "soundblue_queue"; // la cola, dónde iba y las que te gustan
+    private static final String WIDGET_PREFS = "soundblue_widget"; // la última canción (widget/SoundBlueWidgetState.kt)
+    private static final String IDLE_CHANNEL = "soundblue_idle";
+    private static final int IDLE_NOTIFICATION_ID = 0x50B1;
 
     /** Lo que la interfaz quiere saber del reproductor. Siempre en el hilo principal. */
     interface Events {
@@ -146,8 +164,20 @@ public final class PlaybackService extends MediaSessionService {
         addSession(session);
 
         registerNetworkCallback();
+        likedIds.addAll(getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).getStringSet("liked", new HashSet<>()));
+        // Si la app está abierta (p. ej. el widget arrancó la música), se entera desde ya de lo que pasa aquí.
+        events = PlaybackPlugin.listener();
         instance = this;
         updateWidget();
+    }
+
+    @Override
+    public int onStartCommand(@Nullable Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_RESUME_FROM_WIDGET.equals(intent.getAction())) {
+            resumeFromWidget();
+            return START_NOT_STICKY;
+        }
+        return super.onStartCommand(intent, flags, startId); // botones de la notificación y de los audífonos
     }
 
     @Override
@@ -171,6 +201,7 @@ public final class PlaybackService extends MediaSessionService {
             if (connectivity != null) connectivity.unregisterNetworkCallback(networkCallback);
             networkCallback = null;
         }
+        saveQueue(); // con la posición exacta: el widget puede seguir desde aquí
         player.release();
         session.release();
         super.onDestroy();
@@ -179,11 +210,15 @@ public final class PlaybackService extends MediaSessionService {
     // ---- Lo que pide la app (hilo principal) ----
 
     void setEvents(Events events) {
+        if (this.events == events) return;
         this.events = events;
+        updateWidget(); // con la app conectada, el corazón del widget funciona
     }
 
     void clearEvents(Events events) {
-        if (this.events == events) this.events = null;
+        if (this.events != events) return;
+        this.events = null;
+        updateWidget();
     }
 
     Player getPlayer() {
@@ -276,7 +311,9 @@ public final class PlaybackService extends MediaSessionService {
 
     /** La app avisa si la canción está en Tus me gusta (el corazón del widget). */
     void setLiked(String videoId, boolean liked) {
-        if (liked ? likedIds.add(videoId) : likedIds.remove(videoId)) updateWidget();
+        if (!(liked ? likedIds.add(videoId) : likedIds.remove(videoId))) return;
+        saveLiked();
+        updateWidget();
     }
 
     /** Corazón del widget. Tus me gusta viven en la app: sin ella conectada no se puede guardar, así que no hace nada. */
@@ -285,8 +322,120 @@ public final class PlaybackService extends MediaSessionService {
         if (item == null || events == null) return;
         // El corazón cambia al instante; la app lo confirma con setLiked al guardar.
         if (!likedIds.remove(item.mediaId)) likedIds.add(item.mediaId);
+        saveLiked();
         updateWidget();
         events.onLikeToggle(item.mediaId);
+    }
+
+    // ---- Seguir desde el widget con la app cerrada ----
+
+    /**
+     * ▶ del widget con la app cerrada: vuelve a armar la última cola guardada y suena donde iba, sin abrir la app. Las URL
+     * no se guardan (YouTube las vence): NewPipe extrae una nueva al cargar cada canción (resolve), y si una vence a mitad,
+     * onError pide otra. Android arrancó el servicio en primer plano: al empezar a cargar, Media3 muestra la notificación.
+     */
+    private void resumeFromWidget() {
+        if (player.getMediaItemCount() == 0 && !restoreQueue()) {
+            leaveForeground(); // nada guardado: se cumple con el primer plano que pidió Android y se detiene
+            return;
+        }
+        play();
+    }
+
+    /** La cola guardada (o, si no hay, la última canción que mostró el widget). False si no hay nada. */
+    private boolean restoreQueue() {
+        final SharedPreferences prefs = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE);
+        final List<MediaItem> items = new ArrayList<>();
+        try {
+            final JSONArray saved = new JSONArray(prefs.getString("items", "[]"));
+            for (int i = 0; i < saved.length(); i++) {
+                final JSONObject track = saved.optJSONObject(i);
+                if (track != null && StreamResolver.VIDEO_ID.matcher(track.optString("id")).matches()) items.add(mediaItem(track));
+            }
+        } catch (JSONException error) {
+            Log.w(TAG, "La cola guardada está dañada", error);
+        }
+        if (items.isEmpty()) {
+            final SharedPreferences widget = getSharedPreferences(WIDGET_PREFS, MODE_PRIVATE);
+            final String id = widget.getString("id", "");
+            if (!StreamResolver.VIDEO_ID.matcher(id).matches()) return false;
+            final JSONObject track = new JSONObject();
+            try {
+                track.put("id", id).put("title", widget.getString("title", "")).put("artist", widget.getString("artist", ""));
+            } catch (JSONException ignored) {
+                // no pasa con textos
+            }
+            player.setMediaItem(mediaItem(track));
+            return true;
+        }
+        final int index = Math.min(Math.max(0, prefs.getInt("index", 0)), items.size() - 1);
+        player.setMediaItems(items, index, Math.max(0, prefs.getLong("position", 0)));
+        return true;
+    }
+
+    /** La cola, la canción y dónde iba, para seguir desde el widget aunque Android cierre la app. */
+    private void saveQueue() {
+        final int count = player.getMediaItemCount();
+        if (count == 0) return; // vacía (recién creada): se conserva la última guardada
+        final JSONArray items = new JSONArray();
+        for (int i = 0; i < count; i++) items.put(trackJson(player.getMediaItemAt(i)));
+        getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit()
+                .putString("items", items.toString())
+                .putInt("index", player.getCurrentMediaItemIndex())
+                .putLong("position", Math.max(0, player.getCurrentPosition()))
+                .apply();
+    }
+
+    private void saveLiked() {
+        getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit().putStringSet("liked", new HashSet<>(likedIds)).apply();
+    }
+
+    /** Android exige pasar a primer plano tras arrancar así; sin nada que sonar, se muestra un aviso y se quita. */
+    private void leaveForeground() {
+        final NotificationManager manager = getSystemService(NotificationManager.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager != null) {
+            manager.createNotificationChannel(new NotificationChannel(IDLE_CHANNEL, "SoundBlue", NotificationManager.IMPORTANCE_LOW));
+        }
+        final Notification notification = new NotificationCompat.Builder(this, IDLE_CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_soundblue)
+                .setContentTitle("SoundBlue")
+                .setContentText("Abre la app para elegir música")
+                .build();
+        ServiceCompat.startForeground(this, IDLE_NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE);
+        stopSelf();
+    }
+
+    /** Una canción de la app (id, título, artista, álbum, carátula) para ExoPlayer: la URL la resuelve NewPipe al cargarla. */
+    static MediaItem mediaItem(final JSONObject track) {
+        final String videoId = track.optString("id");
+        final MediaMetadata.Builder metadata = new MediaMetadata.Builder()
+                .setTitle(StreamResolver.safe(track.optString("title"), videoId))
+                .setArtist(StreamResolver.safe(track.optString("artist"), "SoundBlue"))
+                .setAlbumTitle(StreamResolver.safe(track.optString("album"), "SoundBlue"));
+        final String artwork = track.optString("artwork");
+        if (artwork.startsWith("https:")) metadata.setArtworkUri(Uri.parse(artwork));
+        return new MediaItem.Builder()
+                .setMediaId(videoId)
+                .setUri(uriFor(videoId))
+                .setMediaMetadata(metadata.build())
+                .build();
+    }
+
+    private static JSONObject trackJson(MediaItem item) {
+        final MediaMetadata metadata = item.mediaMetadata;
+        final JSONObject track = new JSONObject();
+        try {
+            track.put("id", item.mediaId)
+                    .put("title", metadata.title == null ? "" : metadata.title.toString())
+                    .put("artist", metadata.artist == null ? "" : metadata.artist.toString())
+                    .put("album", metadata.albumTitle == null ? "" : metadata.albumTitle.toString())
+                    .put("artwork", metadata.artworkUri == null ? "" : metadata.artworkUri.toString());
+        } catch (JSONException ignored) {
+            // no pasa con textos
+        }
+        return track;
     }
 
     // ---- Cola ----
@@ -484,6 +633,11 @@ public final class PlaybackService extends MediaSessionService {
                     Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_TIMELINE_CHANGED)) {
                 updateWidget();
             }
+            // Cambió la cola, la canción, se pausó o se adelantó: se guarda para seguir desde el widget.
+            if (events.containsAny(Player.EVENT_TIMELINE_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION,
+                    Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_POSITION_DISCONTINUITY)) {
+                saveQueue();
+            }
         }
     }
 
@@ -533,6 +687,7 @@ public final class PlaybackService extends MediaSessionService {
                 metadata.artist == null ? "" : metadata.artist.toString(),
                 !Util.shouldShowPlayButton(player), // ⏸ también mientras carga, como en la app
                 likedIds.contains(item.mediaId),
+                events != null, // ♥ guarda en Tus me gusta, que viven en la app: sin ella abierta no se puede
                 widgetArtwork);
     }
 

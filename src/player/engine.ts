@@ -150,10 +150,12 @@ export class PlayerEngine {
       onState: (state) => this.current && this.onBackendState(state),
       onTrack: (id, reason, state) => this.onNativeTrack(id, reason, state),
       onFailed: (failure) => this.onNativeFailure(failure),
+      onAttach: (id, state) => this.onNativeAttach(id, state),
     })
     this.restore()
     this.applyVolume() // queda guardado: se aplica al cargar la primera canción
     this.snapshot = this.buildSnapshot()
+    void this.audio.attach() // ¿ya suena algo? (el widget puede arrancar la música con la app cerrada)
     setupMediaSession(this)
     window.addEventListener('pagehide', () => this.saveNow())
     // Sin internet: ninguna canción está guardada en el teléfono (el reproductor de YouTube no lo permite), así que no
@@ -832,6 +834,28 @@ export class PlayerEngine {
     if (!track) return
     this.pushHistory()
     this.adopt(track, true, state)
+  }
+
+  /**
+   * El reproductor nativo ya sonaba sin que la app lo pidiera: el widget lo arrancó con la app cerrada (o sigue de antes
+   * de que Android cerrara la pantalla). La app no lo interrumpe: adopta lo que suena. Si es la canción de la sesión
+   * guardada, sigue desde ahí; si avanzó (⏭ en el widget), se busca en la cola de aquí como con cualquier cambio nativo.
+   */
+  private onNativeAttach(id: string, state: BackendState) {
+    const current = this.current
+    if (current?.id === id) {
+      this.loadedId = id
+      this.onBackendState(state === 'playing' || state === 'paused' || state === 'buffering' ? state : 'paused')
+      return
+    }
+    if (current) {
+      this.loadedId = current.id // la de la sesión guardada pasa a ser «la anterior» del nativo
+      this.onNativeTrack(id, 'seek', state)
+      if (this.current?.id !== id) this.loadedId = null // no se pudo adoptar: ▶ en la app vuelve a cargar la suya
+      return
+    }
+    const track = this.audio.trackFor(id)
+    if (track) this.adopt(track, true, state)
   }
 
   /** Deja como actual la que ya suena en el reproductor nativo, sin volver a cargarla. */

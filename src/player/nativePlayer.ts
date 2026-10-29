@@ -26,6 +26,10 @@ interface NativeState {
   position?: number // segundos
   duration?: number // segundos (0 si aún no se sabe)
   seq?: number // el load al que corresponde el aviso
+  // La canción que tiene cargada (por si la app se abre con la música ya sonando).
+  title?: string
+  artist?: string
+  artwork?: string
 }
 
 interface NativePlayerPlugin {
@@ -51,7 +55,6 @@ interface NativePlayerPlugin {
   addListener(eventName: 'trackChanged', listener: (event: NativeState & { id: string; reason: TrackChange }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackFailed', listener: (event: PlaybackFailure & { seq?: number }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'likeToggle', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>
-  addListener(eventName: 'widgetPlay', listener: () => void): Promise<PluginListenerHandle>
 }
 
 // android/app/src/main/java/com/soundblue/mobile/PlaybackPlugin.java
@@ -173,9 +176,26 @@ export class NativePlayerBackend implements MediaBackend {
     if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('likeToggle', ({ id }) => listener(id))
   }
 
-  /** Se tocó ▶ en el widget sobre la última canción guardada (el reproductor no tenía nada cargado): la app se abrió. */
-  onWidgetPlay(listener: () => void) {
-    if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('widgetPlay', listener)
+  /**
+   * Al abrir la app: si el reproductor nativo ya está en marcha (lo arrancó el widget con la app cerrada), la app se
+   * pone al día con él en vez de quedarse con su sesión guardada en pausa. No arranca el reproductor si no lo está.
+   */
+  async attach() {
+    if (Capacitor.getPlatform() !== 'android') return
+    this.listen()
+    const state = await NativePlayer.getState().catch(() => null)
+    if (state && !this.loaded) this.attachTo(state)
+  }
+
+  private attachTo(state: NativeState) {
+    const id = state.id
+    if (!id) return // no tiene nada cargado
+    this.loaded = true
+    this.read(state)
+    if (state.title && !this.known.has(id)) {
+      this.known.set(id, { id, title: state.title, artist: state.artist ?? '', artwork: state.artwork || undefined })
+    }
+    this.events.onAttach(id, state.status)
   }
 
   /** Una canción que se le mandó al reproductor nativo (por si avanzó a una que el motor ya no tiene en su cola). */
@@ -199,11 +219,13 @@ export class NativePlayerBackend implements MediaBackend {
     this.listening = true
     void NativePlayer.addListener('state', (state) => {
       if (this.stale(state)) return
+      if (!this.loaded) return this.attachTo(state) // empezó a sonar sin la app (el widget)
       this.read(state)
       this.events.onState(state.status)
     })
     void NativePlayer.addListener('trackChanged', (event) => {
       if (this.stale(event)) return
+      if (!this.loaded) return this.attachTo(event)
       this.duration = 0 // la de la canción anterior ya no vale
       this.read(event)
       this.events.onTrack(event.id, event.reason, event.status)

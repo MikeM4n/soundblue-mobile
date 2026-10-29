@@ -48,6 +48,8 @@ export interface BackendEvents {
   onState(state: BackendState): void
   onTrack(id: string, reason: TrackChange, state: BackendState): void
   onFailed(failure: PlaybackFailure): void
+  /** El reproductor nativo ya sonaba sin que la app lo pidiera (p. ej. lo arrancó el widget con la app cerrada). */
+  onAttach(id: string, state: BackendState): void
 }
 
 /** Lo que el motor necesita de un reproductor de audio. */

@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Lo que muestra el widget. `title == null`: nunca ha sonado nada. `active`: el reproductor tiene cargada esta canción y
- * los botones la controlan; si no, es la última que sonó (guardada) y ▶ abre la app para seguir con ella.
+ * los botones la controlan; si no, es la última que sonó (guardada) y ▶ la vuelve a poner a sonar, sin abrir la app.
  */
 data class WidgetSnapshot(
     val id: String? = null,
@@ -25,6 +25,7 @@ data class WidgetSnapshot(
     val liked: Boolean = false, // está en Tus me gusta (lo dice la app)
     val artwork: Bitmap? = null,
     val active: Boolean = false,
+    val likeable: Boolean = false, // la app está abierta (en primer o segundo plano) para guardar el ♥
 )
 
 /**
@@ -47,9 +48,18 @@ object SoundBlueWidgetState {
 
     /** Lo que suena: el reproductor la tiene cargada. Se guarda para mostrarla aunque el reproductor se detenga. */
     @JvmStatic
-    fun publish(context: Context, id: String, title: String, artist: String, playing: Boolean, liked: Boolean, artwork: Bitmap?) {
+    fun publish(
+        context: Context,
+        id: String,
+        title: String,
+        artist: String,
+        playing: Boolean,
+        liked: Boolean,
+        likeable: Boolean,
+        artwork: Bitmap?,
+    ) {
         restored = true
-        val next = WidgetSnapshot(id, title, artist, playing, liked, artwork, active = true)
+        val next = WidgetSnapshot(id, title, artist, playing, liked, artwork, active = true, likeable = likeable)
         if (next != state.value) update(context, next)
         remember(context, next)
     }
@@ -58,7 +68,7 @@ object SoundBlueWidgetState {
     @JvmStatic
     fun idle(context: Context) {
         restore(context)
-        update(context, state.value.copy(playing = false, active = false)) // siempre: quita los controles de antes
+        update(context, state.value.copy(playing = false, active = false, likeable = false)) // siempre: quita los controles de antes
     }
 
     /** Al dibujar el widget en un proceso nuevo (Android cerró la app): la última canción guardada. */

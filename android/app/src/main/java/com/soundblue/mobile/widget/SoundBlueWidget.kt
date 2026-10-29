@@ -29,7 +29,7 @@ import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
-import androidx.glance.appwidget.action.actionStartActivity
+import androidx.glance.appwidget.action.actionStartService
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
@@ -79,14 +79,11 @@ private val LIKED = Color(0xFF4169E1) // azul rey del logo: el corazón de Tus m
 private val COMPACT = DpSize(250.dp, 56.dp)
 private val WIDE = DpSize(310.dp, 56.dp)
 
-/** ▶ sobre la última canción guardada: abre la app y sigue con ella (MainActivity se lo pasa a la app). */
-const val ACTION_WIDGET_PLAY = "com.soundblue.mobile.WIDGET_PLAY"
-
 /**
  * Widget de SoundBlue (Jetpack Glance), al estilo del de YouTube Music: a la izquierda la carátula, al centro título y
  * artista (una línea cada uno), a la derecha ⏮ ⏯ ⏭ ♥. Los botones le mandan la orden a PlaybackService con un
  * MediaController (WidgetControls), sin abrir la app; tocar la carátula o el texto la abre. Si el reproductor ya no tiene
- * nada cargado, se ve la última canción que sonó y ▶ abre la app para seguir con ella.
+ * nada cargado (p. ej. cerraste la app), se ve la última canción que sonó y ▶ la vuelve a poner a sonar sin abrir la app.
  */
 class SoundBlueWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Responsive(setOf(COMPACT, WIDE))
@@ -139,13 +136,19 @@ private fun WidgetContent(snapshot: WidgetSnapshot) {
             if (wide) ControlIcon(R.drawable.ic_widget_previous, "Anterior", actionRunCallback<PreviousAction>())
             PlayButton(snapshot.playing, actionRunCallback<PlayPauseAction>())
             ControlIcon(R.drawable.ic_widget_next, "Siguiente", actionRunCallback<NextAction>())
-            ControlIcon(heart, heartLabel, actionRunCallback<ToggleLikeAction>(), tint = if (snapshot.liked) LIKED else TEXT)
-        } else {
-            // El reproductor no tiene nada cargado: ▶ abre la app (y sigue con la última canción, si hay); el resto, apagado.
-            val resume = if (hasSong) {
-                actionStartActivity(Intent(context, MainActivity::class.java).setAction(ACTION_WIDGET_PLAY))
+            if (snapshot.likeable) {
+                ControlIcon(heart, heartLabel, actionRunCallback<ToggleLikeAction>(), tint = if (snapshot.liked) LIKED else TEXT)
             } else {
-                openApp
+                ControlIcon(heart, heartLabel, onClick = null, tint = DIMMED) // Tus me gusta viven en la app: está cerrada
+            }
+        } else {
+            // El reproductor no tiene nada cargado: ▶ vuelve a poner a sonar la última canción (y su cola) sin abrir la app.
+            // Android arranca PlaybackService en primer plano: lo permite porque es un toque en el widget.
+            val resume = if (hasSong) {
+                val intent = Intent(context, PlaybackService::class.java).setAction(PlaybackService.ACTION_RESUME_FROM_WIDGET)
+                actionStartService(intent, isForegroundService = true)
+            } else {
+                openApp // nunca ha sonado nada: a elegir música
             }
             if (wide) ControlIcon(R.drawable.ic_widget_previous, "Anterior", onClick = null, tint = DIMMED)
             PlayButton(playing = false, onClick = resume)
