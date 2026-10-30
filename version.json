@@ -1,6 +1,6 @@
 {
-  "versionCode": 10703,
-  "versionName": "1.7.3",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.7.3/SoundBlue.apk",
-  "changelog": "La música ya no se detiene tras 10 canciones, Selecciones rápidas en el orden que elegiste y recomendaciones mejor filtradas por género."
+  "versionCode": 10800,
+  "versionName": "1.8.0",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.8.0/SoundBlue.apk",
+  "changelog": "Personaliza los géneros de Rumba, Tomar y Relax, dale ♥ a la canción desde la notificación o la pantalla bloqueada, y el corazón del widget ya funciona con la app cerrada."
 }
