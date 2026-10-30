@@ -1,7 +1,8 @@
 // Compila el APK de Android siempre con la interfaz empaquetada (nunca con el servidor de desarrollo):
 // 1. npm run build (TypeScript + Vite → dist)  2. borra android/app/src/main/assets/public y hace cap sync (copia dist y
 // los plugins a android/), así no queda nada de una compilación anterior  3. revisa que la copia tenga index.html y sus
-// JS  4. Gradle assembleDebug.
+// JS  4. Gradle assembleRelease: el APK de producción, firmado con la clave de android/keystore.properties (sin ese
+// archivo no compila: ver android/app/build.gradle).
 // Usa JAVA_HOME y ANDROID_HOME si están definidos; si no, el JDK 21 y el SDK de %LOCALAPPDATA%\SoundBlueAndroidBuild.
 // Deja el resultado en SoundBlue.apk (Gradle ya lo nombra así: android/app/build.gradle).
 import { execSync } from 'node:child_process'
@@ -19,12 +20,16 @@ if (!env.ANDROID_HOME && existsSync(join(local, 'sdk'))) env.ANDROID_HOME = join
 const run = (command, cwd = '.') => execSync(command, { cwd, env, stdio: 'inherit' })
 const PUBLIC = 'android/app/src/main/assets/public'
 
+if (!existsSync('android/keystore.properties')) {
+  console.error('\nFalta android/keystore.properties (la clave de firma y su contraseña): sin ella no se puede firmar el APK.')
+  process.exit(1)
+}
 run('npm run build')
 rmSync(PUBLIC, { recursive: true, force: true })
 run('npx cap sync android')
 checkPublic()
-run(process.platform === 'win32' ? '.\\gradlew.bat assembleDebug' : './gradlew assembleDebug', 'android')
-copyFileSync('android/app/build/outputs/apk/debug/SoundBlue.apk', 'SoundBlue.apk')
+run(process.platform === 'win32' ? '.\\gradlew.bat assembleRelease' : './gradlew assembleRelease', 'android')
+copyFileSync('android/app/build/outputs/apk/release/SoundBlue.apk', 'SoundBlue.apk')
 rmSync('SoundBlue-debug.apk', { force: true }) // el nombre de antes de la 1.7.0: que no quede uno viejo a la mano
 console.log('APK listo: SoundBlue.apk')
 

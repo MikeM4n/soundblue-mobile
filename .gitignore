@@ -7,3 +7,7 @@ dist
 diagnostico-telefono.json
 .wrangler
 *.apk
+# Firma de producción: la clave y su contraseña nunca van al repositorio (android/app/build.gradle).
+android/keystore.properties
+*.keystore
+*.jks

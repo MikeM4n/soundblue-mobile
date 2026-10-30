@@ -6,6 +6,12 @@ apply plugin: 'org.jetbrains.kotlin.plugin.compose' // el widget (Jetpack Glance
 def appVersion = new groovy.json.JsonSlurper().parse(file('../../package.json')).version
 def appVersionParts = appVersion.tokenize('.').collect { it.toInteger() }
 
+// Firma de producción: la clave y su contraseña van en android/keystore.properties (storeFile, storePassword, keyAlias,
+// keyPassword), que nunca se sube a git. Es la misma clave de siempre: las actualizaciones se instalan encima.
+def keystoreFile = rootProject.file('keystore.properties')
+def keystore = new Properties()
+if (keystoreFile.exists()) keystoreFile.withInputStream { keystore.load(it) }
+
 android {
     namespace = "com.soundblue.mobile"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -30,8 +36,20 @@ android {
     buildFeatures {
         compose true
     }
-    buildTypes {
+    signingConfigs {
         release {
+            if (keystoreFile.exists()) {
+                storeFile file(keystore['storeFile'])
+                storePassword keystore['storePassword']
+                keyAlias keystore['keyAlias']
+                keyPassword keystore['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        // El APK que se publica (npm run apk): no se puede depurar ni leer sus datos por USB.
+        release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
