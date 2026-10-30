@@ -32,6 +32,15 @@ interface NativeState {
   artwork?: string
 }
 
+/** Se tocó el corazón (widget, notificación o pantalla bloqueada) sobre la canción `id`: debe quedar como dice `liked`. */
+export interface LikeToggle {
+  id: string
+  liked?: boolean
+  title?: string
+  artist?: string
+  artwork?: string
+}
+
 interface NativePlayerPlugin {
   load(options: {
     history: NativeTrack[]
@@ -55,7 +64,7 @@ interface NativePlayerPlugin {
   addListener(eventName: 'state', listener: (state: NativeState) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackChanged', listener: (event: NativeState & { id: string; reason: TrackChange; after?: string }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackFailed', listener: (event: PlaybackFailure & { seq?: number }) => void): Promise<PluginListenerHandle>
-  addListener(eventName: 'likeToggle', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'likeToggle', listener: (event: LikeToggle) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'queueLow', listener: () => void): Promise<PluginListenerHandle>
 }
 
@@ -180,9 +189,9 @@ export class NativePlayerBackend implements MediaBackend {
     return true
   }
 
-  /** Se tocó el corazón del widget sobre la canción `id`. */
-  onLikeToggle(listener: (id: string) => void) {
-    if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('likeToggle', ({ id }) => listener(id))
+  /** Se tocó el corazón del widget, de la notificación o de la pantalla bloqueada (también con la app cerrada). */
+  onLikeToggle(listener: (like: LikeToggle) => void) {
+    if (Capacitor.getPlatform() === 'android') void NativePlayer.addListener('likeToggle', listener)
   }
 
   /**

@@ -21,6 +21,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.google.common.util.concurrent.ListenableFuture;
 
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -208,10 +209,13 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
     }
 
     @Override
-    public void onLikeToggle(String videoId) {
-        final JSObject data = new JSObject();
-        data.put("id", videoId);
-        notifyListeners("likeToggle", data);
+    public void onLikeToggle(JSONObject track) {
+        try {
+            // Si la app aún no escucha (recién abierta, con «Me gusta» anotados), el aviso la espera.
+            notifyListeners("likeToggle", JSObject.fromJSONObject(track), true);
+        } catch (JSONException error) {
+            Log.w(TAG, "No se pudo pasar el «Me gusta» a la app", error);
+        }
     }
 
     // ---- Internos ----

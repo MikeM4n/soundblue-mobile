@@ -46,6 +46,7 @@ export interface GenreSource {
   queries: string[] // búsquedas de playlists, como «salsa para fiesta»
   match: RegExp // sirven las playlists que traen esto en el título…
   avoid?: RegExp // …salvo las que traen esto
+  genre?: GenreKey // el del índice de géneros, si no es `key` (Despecho → popular)
 }
 
 const SALSA: GenreSource = { key: 'salsa', label: 'Salsa', queries: ['salsa'], match: /salsa/i }
@@ -54,6 +55,10 @@ const MERENGUE: GenreSource = { key: 'merengue', label: 'Merengue', queries: ['m
 const POPULAR: GenreSource = { key: 'popular', label: 'Popular', category: 'Música regional y popular', queries: ['música popular despecho'], match: /popular|despecho/i }
 const VALLENATO: GenreSource = { key: 'vallenato', label: 'Vallenato', category: 'Vallenato', queries: ['vallenato'], match: /vallenat/i }
 const COLOMBIANA: GenreSource = { key: 'colombiana', label: 'Música colombiana', queries: ['música colombiana'], match: /colombi/i }
+// Los que solo tenían los Modos (Tomar y Relax).
+const DESPECHO: GenreSource = { key: 'despecho', label: 'Despecho', category: 'Música regional y popular', queries: ['música para tomar despecho'], match: /despecho|popular/i, genre: 'popular' }
+const RANCHERAS: GenreSource = { key: 'rancheras', label: 'Rancheras', category: 'Música regional y popular', queries: ['rancheras para tomar'], match: /ranch|mariachi|vicente/i, genre: 'regional' }
+const CHILL: GenreSource = { key: 'chill', label: 'Chill', queries: ['chill latino', 'relajante'], match: /chill|relaj|calma|tranquil|cafecito/i, avoid: /house|jazz|nana|beb[eé]|rock/i }
 
 /**
  * Géneros que reconoce la radio (data/genreIndex.ts): de las playlists de cada uno sale qué artistas son de qué género.
@@ -119,9 +124,10 @@ export interface Mode {
   label: string
   note: string
   // Si los tiene, su radio es de estos géneros (no se adivinan de cada canción) y su lista no trae nada que choque con
-  // ellos. Sin esto (Rumba, Relax), la radio sigue el género de la canción que suena.
+  // ellos. Sin esto (Rumba, Relax), la radio sigue el género de la canción que suena. Si personalizas el modo, son los
+  // de los géneros que elegiste (customMode).
   genres?: GenreKey[]
-  filters: GenreSource[] // subfiltros; «Todo» los mezcla
+  filters: GenreSource[] // subfiltros (los géneros del modo, por defecto); «Todo» los mezcla
 }
 
 export const MODES: Mode[] = [
@@ -140,23 +146,67 @@ export const MODES: Mode[] = [
     label: 'Modo Tomar',
     note: 'Despecho, rancheras y vallenato',
     genres: ['popular', 'regional', 'vallenato'],
-    filters: [
-      { key: 'despecho', label: 'Despecho', category: 'Música regional y popular', queries: ['música para tomar despecho'], match: /despecho|popular/i },
-      { key: 'rancheras', label: 'Rancheras', category: 'Música regional y popular', queries: ['rancheras para tomar'], match: /ranch|mariachi|vicente/i },
-      { key: 'vallenato', label: 'Vallenato', category: 'Vallenato', queries: ['vallenato para tomar'], match: /vallenat/i },
-    ],
+    filters: [DESPECHO, RANCHERAS, { key: 'vallenato', label: 'Vallenato', category: 'Vallenato', queries: ['vallenato para tomar'], match: /vallenat/i }],
   },
   {
     key: 'relax',
     label: 'Modo Relax',
     note: 'Para bajar el ritmo',
-    filters: [
-      { key: 'baladas', label: 'Baladas', queries: ['baladas en español'], match: /balad/i },
-      { key: 'boleros', label: 'Boleros', queries: ['boleros'], match: /bolero/i },
-      { key: 'chill', label: 'Chill', queries: ['chill latino', 'relajante'], match: /chill|relaj|calma|tranquil|cafecito/i, avoid: /house|jazz|nana|beb[eé]|rock/i },
-    ],
+    filters: [INDEX_GENRES.baladas, INDEX_GENRES.boleros, CHILL],
   },
 ]
+
+/**
+ * Todos los géneros de la app, para personalizar cualquier Modo (agregar o quitar). En su propio modo, un género usa la
+ * búsqueda de ese modo («salsa para fiesta» en Rumba); en otro, la de aquí.
+ */
+export const MODE_GENRES: GenreSource[] = [
+  SALSA,
+  REGGAETON,
+  MERENGUE,
+  INDEX_GENRES.bachata,
+  INDEX_GENRES.cumbia,
+  VALLENATO,
+  POPULAR,
+  DESPECHO,
+  RANCHERAS,
+  INDEX_GENRES.regional,
+  COLOMBIANA,
+  INDEX_GENRES.pop,
+  INDEX_GENRES.baladas,
+  INDEX_GENRES.boleros,
+  CHILL,
+  INDEX_GENRES.trap,
+  INDEX_GENRES.dancehall,
+  INDEX_GENRES.electronica,
+  INDEX_GENRES.rock,
+  INDEX_GENRES.kpop,
+  INDEX_GENRES.jpop,
+  INDEX_GENRES.cpop,
+]
+
+/** Los géneros por defecto de un modo (Rumba: salsa, reggaetón y merengue). */
+export const defaultModeGenres = (mode: Mode) => mode.filters.map((source) => source.key)
+
+/**
+ * El modo con los géneros que elegiste, en ese orden: son sus subfiltros y, en Tomar, también los de su radio (así
+ * agregar salsa a Tomar no la deja fuera por chocar con el despecho).
+ */
+export function customMode(mode: Mode, keys: readonly string[]): Mode {
+  const filters = keys
+    .map((key) => mode.filters.find((source) => source.key === key) ?? MODE_GENRES.find((source) => source.key === key))
+    .filter((source) => source !== undefined)
+  if (!filters.length) return mode
+  const genres = [...new Set(filters.map((source) => source.genre ?? (Object.hasOwn(INDEX_GENRES, source.key) ? (source.key as GenreKey) : null)))].filter((genre) => genre !== null)
+  return { ...mode, filters, genres: mode.genres && genres.length ? genres : undefined }
+}
+
+/** Lo que dice el modo debajo de su nombre: su nota de siempre o, si lo personalizaste, sus géneros («Salsa y Popular»). */
+export function modeNote(mode: Mode, keys: readonly string[]): string {
+  if (keys.join() === defaultModeGenres(mode).join()) return mode.note
+  const labels = customMode(mode, keys).filters.map((source) => source.label)
+  return labels.length > 1 ? `${labels.slice(0, -1).join(', ')} y ${labels.at(-1)}` : (labels[0] ?? mode.note)
+}
 
 const mixes = (title: string) => GENRE_WORDS.filter((word) => word.test(title)).length
 

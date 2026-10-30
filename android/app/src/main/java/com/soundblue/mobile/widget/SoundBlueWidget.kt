@@ -189,7 +189,7 @@ private fun Controls(snapshot: WidgetSnapshot, dims: Dims) {
         }
         else -> actionStartActivity<MainActivity>() // nunca ha sonado nada: a elegir música
     }
-    // ♥ solo con la app abierta: Tus me gusta viven en ella.
+    // ♥ con el reproductor en marcha: si la app está cerrada, PlaybackService lo anota y la app lo guarda al abrirse.
     val like = if (snapshot.active && snapshot.likeable) actionRunCallback<ToggleLikeAction>() else null
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Slot { ControlIcon(R.drawable.ic_widget_previous, "Anterior", if (snapshot.active) actionRunCallback<PreviousAction>() else null, button, icon) }

@@ -1,4 +1,4 @@
-import { Heart, Music, Play, SkipBack, SkipForward } from 'lucide-react'
+import { Heart, Music, Play, SkipBack, SkipForward, SlidersHorizontal } from 'lucide-react'
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { ArtistPicker } from '../components/tastes/ArtistPicker'
@@ -64,6 +64,10 @@ export function Onboarding() {
             <h1 className="mt-1 text-3xl font-bold md:text-4xl">Elige tus ritmos favoritos</h1>
             <p className="mt-2 text-texto-sec">
               Con ellos se arman tus selecciones, las recomendaciones y la cola. Puedes cambiarlos cuando quieras en Ajustes.
+            </p>
+            <p className="mt-4 flex gap-3 rounded-lg bg-tarjeta p-3 text-sm text-texto">
+              <SlidersHorizontal className="mt-0.5 size-5 shrink-0 text-acento-texto" aria-hidden="true" />
+              <span>Elige tus ritmos favoritos para las sugerencias. Más adelante puedes personalizar cada Modo de Ambiente (Rumba, Tomar, Relax) a tu gusto.</span>
             </p>
             <GenrePicker className="mt-6" onChange={(genres) => schedulePrefetch(artists, genres)} />
           </>

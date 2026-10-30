@@ -39,6 +39,7 @@ import androidx.media3.datasource.ResolvingDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
+import androidx.media3.session.CommandButton;
 import androidx.media3.session.DefaultMediaNotificationProvider;
 import androidx.media3.session.MediaSession;
 import androidx.media3.session.MediaSessionService;
@@ -46,6 +47,7 @@ import androidx.media3.session.SessionCommand;
 import androidx.media3.session.SessionCommands;
 import androidx.media3.session.SessionResult;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.soundblue.mobile.widget.SoundBlueWidgetState;
@@ -113,8 +115,11 @@ public final class PlaybackService extends MediaSessionService {
 
         void onTrackFailed(String videoId, String message, boolean network, boolean skipped);
 
-        /** Se tocó el corazón del widget: la app agrega o quita la canción de Tus me gusta. */
-        void onLikeToggle(String videoId);
+        /**
+         * Se tocó el corazón (widget, notificación o pantalla bloqueada): la app pone o quita la canción de Tus me gusta.
+         * `track`: id, título, artista, carátula y `liked` (cómo debe quedar).
+         */
+        void onLikeToggle(JSONObject track);
 
         /** Quedan 3 o menos por sonar: la app debe mandar más. */
         void onQueueLow();
@@ -135,6 +140,7 @@ public final class PlaybackService extends MediaSessionService {
     private Uri widgetArtworkUri; // carátula que tiene (o está cargando) el widget
     private Bitmap widgetArtwork;
     private final Set<String> likedIds = new HashSet<>(); // las que la app dice que están en Tus me gusta
+    private Boolean likeButton; // cómo está el corazón de la notificación (lleno: true), para no repintarlo de más
     private int generation; // número del último `load` de la app: con él, la app descarta avisos de antes
     // Seguir solo: con la Fila Dinámica (la app lo dice), al acabarse la cola el servicio agrega canciones parecidas.
     private boolean endless;
@@ -196,6 +202,7 @@ public final class PlaybackService extends MediaSessionService {
         // Si la app está abierta (p. ej. el widget arrancó la música), se entera desde ya de lo que pasa aquí.
         events = PlaybackPlugin.listener();
         instance = this;
+        deliverPendingLikes();
         updateWidget();
     }
 
@@ -239,15 +246,12 @@ public final class PlaybackService extends MediaSessionService {
     // ---- Lo que pide la app (hilo principal) ----
 
     void setEvents(Events events) {
-        if (this.events == events) return;
         this.events = events;
-        updateWidget(); // con la app conectada, el corazón del widget funciona
+        deliverPendingLikes(); // los «Me gusta» que se tocaron con la app cerrada
     }
 
     void clearEvents(Events events) {
-        if (this.events != events) return;
-        this.events = null;
-        updateWidget();
+        if (this.events == events) this.events = null;
     }
 
     Player getPlayer() {
@@ -360,15 +364,70 @@ public final class PlaybackService extends MediaSessionService {
         updateWidget();
     }
 
-    /** Corazón del widget. Tus me gusta viven en la app: sin ella conectada no se puede guardar, así que no hace nada. */
+    /**
+     * Corazón del widget, de la notificación o de la pantalla bloqueada: cambia al instante y la app guarda la canción en
+     * Tus me gusta (y lo confirma con setLiked). Si la app está cerrada (la música la arrancó el widget), queda anotado y
+     * se guarda en cuanto se abre.
+     */
     private void toggleLike() {
         final MediaItem item = player.getCurrentMediaItem();
-        if (item == null || events == null) return;
-        // El corazón cambia al instante; la app lo confirma con setLiked al guardar.
-        if (!likedIds.remove(item.mediaId)) likedIds.add(item.mediaId);
+        if (item == null) return;
+        final boolean liked = !likedIds.remove(item.mediaId);
+        if (liked) likedIds.add(item.mediaId);
         saveLiked();
         updateWidget();
-        events.onLikeToggle(item.mediaId);
+        final JSONObject like = trackJson(item);
+        try {
+            like.put("liked", liked);
+        } catch (JSONException ignored) {
+            // no pasa con un booleano
+        }
+        if (events != null) {
+            events.onLikeToggle(like);
+            return;
+        }
+        final SharedPreferences prefs = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE);
+        try {
+            final JSONObject pending = new JSONObject(prefs.getString("pendingLikes", "{}"));
+            pending.put(item.mediaId, like); // si la tocas dos veces, cuenta la última
+            prefs.edit().putString("pendingLikes", pending.toString()).apply();
+        } catch (JSONException error) {
+            Log.w(TAG, "No se pudo anotar el «Me gusta»", error);
+        }
+    }
+
+    /** Los «Me gusta» que se tocaron con la app cerrada: se le pasan ahora que está abierta. */
+    private void deliverPendingLikes() {
+        if (events == null) return;
+        final SharedPreferences prefs = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE);
+        final String saved = prefs.getString("pendingLikes", "{}");
+        if ("{}".equals(saved)) return;
+        prefs.edit().remove("pendingLikes").apply();
+        try {
+            final JSONObject pending = new JSONObject(saved);
+            for (final Iterator<String> ids = pending.keys(); ids.hasNext(); ) {
+                final JSONObject like = pending.optJSONObject(ids.next());
+                if (like != null) events.onLikeToggle(like);
+            }
+        } catch (JSONException error) {
+            Log.w(TAG, "Los «Me gusta» anotados están dañados", error);
+        }
+    }
+
+    /** El corazón de la notificación (y de la pantalla bloqueada): lleno si la que suena está en Tus me gusta. */
+    private void updateLikeButton(@Nullable MediaItem item) {
+        final boolean liked = item != null && likedIds.contains(item.mediaId);
+        if (likeButton != null && likeButton == liked) return;
+        likeButton = liked;
+        session.setMediaButtonPreferences(likeButtons(liked));
+    }
+
+    private static List<CommandButton> likeButtons(boolean liked) {
+        return ImmutableList.of(new CommandButton.Builder(liked ? CommandButton.ICON_HEART_FILLED : CommandButton.ICON_HEART_UNFILLED)
+                .setDisplayName(liked ? "Quitar de Tus me gusta" : "Me gusta")
+                .setSessionCommand(TOGGLE_LIKE)
+                .setSlots(CommandButton.SLOT_OVERFLOW) // después de ⏮ ⏯ ⏭, que siguen en su sitio
+                .build());
     }
 
     // ---- Seguir desde el widget con la app cerrada ----
@@ -784,7 +843,10 @@ public final class PlaybackService extends MediaSessionService {
         }
     }
 
-    /** Lo que la sesión acepta además de lo normal: el corazón, solo desde la propia app (el widget). */
+    /**
+     * Lo que la sesión acepta además de lo normal: el corazón, solo desde la propia app (el widget y la notificación, que
+     * es la que usa Android para la pantalla bloqueada y los controles de medios).
+     */
     private final class SessionCallback implements MediaSession.Callback {
         @Override
         public MediaSession.ConnectionResult onConnect(MediaSession session, MediaSession.ControllerInfo controller) {
@@ -793,8 +855,10 @@ public final class PlaybackService extends MediaSessionService {
             }
             final SessionCommands commands =
                     MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon().add(TOGGLE_LIKE).build();
+            final MediaItem item = player.getCurrentMediaItem();
             return new MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .setAvailableSessionCommands(commands)
+                    .setMediaButtonPreferences(likeButtons(item != null && likedIds.contains(item.mediaId)))
                     .build();
         }
 
@@ -813,6 +877,7 @@ public final class PlaybackService extends MediaSessionService {
 
     private void updateWidget() {
         final MediaItem item = player.getCurrentMediaItem();
+        updateLikeButton(item); // y el corazón de la notificación, con lo mismo
         if (item == null) {
             widgetArtworkUri = null;
             widgetArtwork = null;
@@ -830,7 +895,7 @@ public final class PlaybackService extends MediaSessionService {
                 metadata.artist == null ? "" : metadata.artist.toString(),
                 !Util.shouldShowPlayButton(player), // ⏸ también mientras carga, como en la app
                 likedIds.contains(item.mediaId),
-                events != null, // ♥ guarda en Tus me gusta, que viven en la app: sin ella abierta no se puede
+                true, // ♥ siempre: con la app cerrada queda anotado y se guarda al abrirla (toggleLike)
                 widgetArtwork);
     }
 

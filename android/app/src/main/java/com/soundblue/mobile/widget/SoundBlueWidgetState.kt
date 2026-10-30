@@ -25,7 +25,7 @@ data class WidgetSnapshot(
     val liked: Boolean = false, // está en Tus me gusta (lo dice la app)
     val artwork: Bitmap? = null,
     val active: Boolean = false,
-    val likeable: Boolean = false, // la app está abierta (en primer o segundo plano) para guardar el ♥
+    val likeable: Boolean = false, // el ♥ responde (con la app cerrada, PlaybackService lo anota hasta que se abra)
 )
 
 /**
