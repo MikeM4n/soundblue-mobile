@@ -55,8 +55,11 @@ const CLASH: readonly GenreKey[] = ['salsa', 'merengue', 'bachata', 'reggaeton',
 const CLASH_WORDS = /\b(salsa|merengue|bachata|regg?a?et[oó]n|perreo|dembow|dancehall)\b/i
 
 const KEY = 'soundblue:indice-generos'
-const VERSION = 5 // cambia si cambian los géneros, sus fuentes o la forma de contar
+// Cambia si cambian los géneros, sus fuentes o la forma de contar. 6: antes se guardaba aunque varios géneros no
+// hubieran respondido, y con un índice a medias las radios dejaban pasar artistas de cualquier género.
+const VERSION = 6
 const MAX_AGE = 7 * 24 * 3600 * 1000
+const MAX_MISSING = 1 // géneros que pueden faltar (sin respuesta) para guardar el índice
 const PLAYLISTS_PER_GENRE = 3
 // La familia cerrada no deja entrar artistas que el índice no conoce: de esos géneros se leen más playlists.
 const PLAYLISTS_CLOSED = 6
@@ -66,11 +69,13 @@ const STRONG = 0.5 // un género cuenta si suma al menos la mitad que el más fu
 
 export const genreLabel = (genre: GenreKey) => INDEX_GENRES[genre].label
 
-function readSaved(): GenreIndex | null {
+/** El índice guardado y si ya tiene más de 7 días (vencido: sirve mientras se arma otro). */
+function readSaved(): { index: GenreIndex; expired: boolean } | null {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? 'null')
-    if (saved?.v !== VERSION || Date.now() - saved.at > MAX_AGE) return null
-    return new Map(Object.entries(saved.artists as Record<string, GenreKey[]>).map(([artist, genres]) => [artist, new Set(genres)]))
+    if (saved?.v !== VERSION) return null
+    const index = new Map(Object.entries(saved.artists as Record<string, GenreKey[]>).map(([artist, genres]) => [artist, new Set(genres)]))
+    return { index, expired: Date.now() - saved.at > MAX_AGE }
   } catch {
     return null
   }
@@ -85,15 +90,19 @@ function save(index: GenreIndex) {
   }
 }
 
-async function build(): Promise<GenreIndex> {
+/** El índice nuevo y si salió completo (respondieron todos los géneros, salvo `MAX_MISSING`). */
+async function build(): Promise<{ index: GenreIndex; complete: boolean }> {
   const counts = new Map<string, Map<GenreKey, number>>() // artista → cuánto sale en las playlists de cada género
   const genres = Object.keys(INDEX_GENRES) as GenreKey[]
+  let answered = 0
   for (let i = 0; i < genres.length; i += AT_ONCE) {
     await Promise.all(
       genres.slice(i, i + AT_ONCE).map(async (genre) => {
         const playlists = (await sourcePlaylists(INDEX_GENRES[genre]).catch(() => [])).slice(0, CLOSED.includes(genre) ? PLAYLISTS_CLOSED : PLAYLISTS_PER_GENRE)
         const pages = await Promise.all(playlists.map((playlist) => ytmPage(playlist.id).catch(() => null)))
-        for (const track of pages.flatMap((page) => page?.tracks ?? [])) {
+        const tracks = pages.flatMap((page) => page?.tracks ?? [])
+        if (tracks.length) answered++
+        for (const track of tracks) {
           const main = artistKey(track.artist)
           for (const artist of artistKeys(track.artist)) {
             const byGenre = counts.get(artist) ?? new Map<GenreKey, number>()
@@ -104,6 +113,7 @@ async function build(): Promise<GenreIndex> {
       }),
     )
   }
+  const complete = answered >= genres.length - MAX_MISSING
   const serialized = Object.fromEntries([...counts].map(([artist, values]) => [artist, Object.fromEntries(values)]))
   try {
     const classified = await new Promise<Record<string, GenreKey[]>>((resolve, reject) => {
@@ -112,27 +122,41 @@ async function build(): Promise<GenreIndex> {
       worker.onerror = (event) => { worker.terminate(); reject(event.error) }
       worker.postMessage(serialized)
     })
-    return new Map(Object.entries(classified).map(([artist, genres]) => [artist, new Set(genres)]))
+    return { index: new Map(Object.entries(classified).map(([artist, genres]) => [artist, new Set(genres)])), complete }
   } catch {
     const index = new Map<string, Set<GenreKey>>()
     for (const [artist, byGenre] of counts) {
       const top = Math.max(...byGenre.values())
       index.set(artist, new Set([...byGenre].filter(([, n]) => n >= top * STRONG).map(([genre]) => genre)))
     }
-    return index
+    return { index, complete }
   }
 }
 
 let building: Promise<GenreIndex> | null = null
 
-/** El índice: el guardado o, si no hay (o tiene más de 7 días), uno nuevo. */
+/**
+ * El índice: el guardado o, si no hay, uno nuevo. Si el guardado tiene más de 7 días, sirve mientras se arma el nuevo
+ * (así las radios nunca se quedan sin filtro de género). Uno a medias (varios géneros no respondieron) sirve en esta
+ * sesión pero no se guarda: la próxima vez se arma completo.
+ */
 export function genreIndex(): Promise<GenreIndex> {
   building ??= Promise.resolve(readSaved()).then(async (saved) => {
-    if (saved) return saved
+    if (saved && !saved.expired) return saved.index
+    if (saved) {
+      void build()
+        .then((fresh) => {
+          if (!fresh.complete) return
+          save(fresh.index)
+          building = Promise.resolve(fresh.index)
+        })
+        .catch(() => {})
+      return saved.index
+    }
     const fresh = await build()
-    if (fresh.size) save(fresh)
-    else building = null // sin conexión: se intenta otra vez después
-    return fresh
+    if (fresh.complete) save(fresh.index)
+    else if (!fresh.index.size) building = null // sin conexión: se intenta otra vez después
+    return fresh.index
   })
   return building
 }

@@ -78,12 +78,13 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         final List<MediaItem> before = items(call.getArray("history"));
         final List<MediaItem> after = items(call.getArray("upcoming"));
         final MediaItem item = PlaybackService.mediaItem(current);
+        final boolean endless = call.getBoolean("endless", true);
         final long startMs = Math.max(0, Math.round(call.getDouble("start", 0.0) * 1000));
         final boolean autoplay = call.getBoolean("autoplay", true);
         final float volume = call.getFloat("volume", 1f);
         final int generation = call.getInt("seq", 0);
         withService(call, (service) -> {
-            service.load(before, item, after, startMs, autoplay, volume, generation);
+            service.load(before, item, after, endless, startMs, autoplay, volume, generation);
             call.resolve();
         });
     }
@@ -93,8 +94,9 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         final String currentId = call.getString("currentId", "");
         final List<MediaItem> before = items(call.getArray("history"));
         final List<MediaItem> after = items(call.getArray("upcoming"));
+        final boolean endless = call.getBoolean("endless", true);
         withService(call, (service) -> {
-            service.setNeighbors(currentId, before, after);
+            service.setNeighbors(currentId, before, after, endless);
             call.resolve();
         });
     }
@@ -175,11 +177,17 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
     // ---- Eventos del servicio (hilo principal) ----
 
     @Override
-    public void onTrackChanged(String videoId, String reason) {
+    public void onTrackChanged(String videoId, String reason, String after) {
         final JSObject data = state();
         data.put("id", videoId);
         data.put("reason", reason);
+        if (after != null) data.put("after", after);
         notifyListeners("trackChanged", data);
+    }
+
+    @Override
+    public void onQueueLow() {
+        notifyListeners("queueLow", new JSObject());
     }
 
     @Override

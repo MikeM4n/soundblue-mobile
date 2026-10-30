@@ -176,7 +176,7 @@ export function Home() {
 /**
  * «Selecciones rápidas» por género (por defecto Salsa, Reggaetón, Merengue y Popular; con «+» eliges cuáles, y se
  * recuerda en este navegador): canciones de las playlists de YouTube Music de ese género, sin las que ya se ven en otro
- * estante de Inicio. Cada género se pide al elegirlo.
+ * estante de Inicio. Cada género se pide al elegirlo. Van en el orden en que los elegiste (el primero se ve al abrir).
  */
 function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<string>; onPlay: (track: Track) => void; artistGenres: string[] }) {
   const preferred = useFavoriteGenres()
@@ -186,9 +186,10 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
   }, [preferred.join(','), artistGenres.join(',')])
   const chosen: GenreKey[] = preferred.length ? preferred : derived.length ? derived : QUICK_PICK_DEFAULT as GenreKey[]
   const [picking, setPicking] = useState(false)
-  const genres = QUICK_PICK_OPTIONS.filter((g) => chosen.includes(g.key as GenreKey))
+  const inOrder = chosen.map((key) => QUICK_PICK_OPTIONS.find((g) => g.key === key)).filter((g) => g !== undefined)
+  const genres = inOrder.length ? inOrder : QUICK_PICK_OPTIONS.filter((g) => QUICK_PICK_DEFAULT.includes(g.key))
   const [selected, setGenre] = useState(genres[0].key)
-  const genre = chosen.includes(selected as GenreKey) ? selected : genres[0].key // si quitaste el que se veía, el primero
+  const genre = genres.some((g) => g.key === selected) ? selected : genres[0].key // si quitaste el que se veía, el primero
   const [loaded, setLoaded] = useState<Record<string, Track[] | 'error'>>({})
   useEffect(() => {
     if (loaded[genre]) return
@@ -201,11 +202,10 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
       alive = false
     }
   }, [genre, loaded])
-  // Quitar o poner un género (siempre queda al menos uno).
+  // Quitar o poner un género (siempre queda al menos uno). El que agregas va al final, después de los que ya tenías.
   const toggle = (key: string) => {
     const typed = key as GenreKey
-    const next = chosen.includes(typed) ? chosen.filter((k) => k !== typed) : QUICK_PICK_OPTIONS.map((g) => g.key as GenreKey).filter((k) => k === typed || chosen.includes(k))
-    favoriteGenres.set(next)
+    favoriteGenres.set(chosen.includes(typed) ? chosen.filter((k) => k !== typed) : [...chosen, typed])
   }
   const list = loaded[genre]
   const tracks = Array.isArray(list) ? list.filter((track) => !hide.has(track.id)).slice(0, 16) : []

@@ -60,10 +60,16 @@ import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Reproductor de SoundBlue: ExoPlayer con la cola de canciones dentro del servicio de Android. Al terminar una canción
@@ -79,6 +85,12 @@ public final class PlaybackService extends MediaSessionService {
     private static final int MAX_FAILURES = 10; // canciones seguidas que fallan antes de detenerse
     private static final long SAME_POSITION_MS = 2000;
     private static final int WIDGET_ARTWORK_PX = 256;
+    private static final int LOW_QUEUE = 3; // quedan 3 o menos por sonar: se le pide más a la app
+    private static final int AUTO_BATCH = 5; // las parecidas que agrega el servicio cuando sigue solo…
+    private static final int AUTO_PER_ARTIST = 2; // …como mucho 2 del mismo artista (como la radio de la app)
+    private static final long APP_GRACE_MS = 15_000; // con la app abierta, lo que se le espera antes de seguir solo
+    private static final long ENDED_GRACE_MS = 5_000;
+    private static final int RECENT_LIMIT = 200; // las que ya sonaron: al seguir solo no se repiten
     /** Comando de sesión del corazón del widget: «Me gusta» / quitar de Tus me gusta la que suena. */
     public static final String ACTION_TOGGLE_LIKE = "com.soundblue.mobile.TOGGLE_LIKE";
     private static final SessionCommand TOGGLE_LIKE = new SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY);
@@ -91,8 +103,11 @@ public final class PlaybackService extends MediaSessionService {
 
     /** Lo que la interfaz quiere saber del reproductor. Siempre en el hilo principal. */
     interface Events {
-        /** reason: "auto" (terminó la anterior), "seek" (un botón o la app) o "failed" (la anterior no se pudo reproducir). */
-        void onTrackChanged(String videoId, String reason);
+        /**
+         * reason: "auto" (terminó la anterior), "seek" (un botón o la app) o "failed" (la anterior no se pudo reproducir).
+         * after: si es una de las que el servicio agregó solo, la última que le había mandado la app (si no, null).
+         */
+        void onTrackChanged(String videoId, String reason, @Nullable String after);
 
         void onStateChanged();
 
@@ -100,6 +115,9 @@ public final class PlaybackService extends MediaSessionService {
 
         /** Se tocó el corazón del widget: la app agrega o quita la canción de Tus me gusta. */
         void onLikeToggle(String videoId);
+
+        /** Quedan 3 o menos por sonar: la app debe mandar más. */
+        void onQueueLow();
     }
 
     private static PlaybackService instance;
@@ -118,6 +136,14 @@ public final class PlaybackService extends MediaSessionService {
     private Bitmap widgetArtwork;
     private final Set<String> likedIds = new HashSet<>(); // las que la app dice que están en Tus me gusta
     private int generation; // número del último `load` de la app: con él, la app descarta avisos de antes
+    // Seguir solo: con la Fila Dinámica (la app lo dice), al acabarse la cola el servicio agrega canciones parecidas.
+    private boolean endless;
+    private String appLastId; // la última canción que mandó la app: las que siguen las agregó el servicio
+    private final Set<String> autoIds = new HashSet<>(); // las que agregó el servicio solo
+    private final Set<String> recent = new LinkedHashSet<>(); // las que ya sonaron, de la más vieja a la más nueva
+    private boolean advancing; // el servicio pasó solo a la siguiente: cuenta como «terminó la anterior»
+    private int extendRequest; // el último pedido de parecidas (los de antes se descartan)
+    private final Runnable autoExtend = this::autoExtend;
 
     static PlaybackService get() {
         return instance;
@@ -164,7 +190,9 @@ public final class PlaybackService extends MediaSessionService {
         addSession(session);
 
         registerNetworkCallback();
-        likedIds.addAll(getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).getStringSet("liked", new HashSet<>()));
+        final SharedPreferences queuePrefs = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE);
+        likedIds.addAll(queuePrefs.getStringSet("liked", new HashSet<>()));
+        endless = queuePrefs.getBoolean("endless", true); // también con la app cerrada (el widget)
         // Si la app está abierta (p. ej. el widget arrancó la música), se entera desde ya de lo que pasa aquí.
         events = PlaybackPlugin.listener();
         instance = this;
@@ -195,6 +223,7 @@ public final class PlaybackService extends MediaSessionService {
     public void onDestroy() {
         instance = null;
         events = null;
+        main.removeCallbacks(autoExtend);
         SoundBlueWidgetState.idle(this); // sin servicio no hay nada que controlar: queda la última canción, en pausa
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
@@ -233,12 +262,13 @@ public final class PlaybackService extends MediaSessionService {
      * Pone a sonar `current` con las anteriores (`before`) y las próximas (`after`). Si es la siguiente o la anterior de
      * la que suena, solo salta a ella (su URL ya está pre-cargada); si no, arma la cola de nuevo.
      */
-    void load(List<MediaItem> before, MediaItem current, List<MediaItem> after, long startMs, boolean autoplay,
-              float volume, int generation) {
+    void load(List<MediaItem> before, MediaItem current, List<MediaItem> after, boolean endless, long startMs,
+              boolean autoplay, float volume, int generation) {
         this.generation = generation;
         retried = null;
         skippedFailed = null;
         waitingForNetwork = false;
+        fromApp(current, after, endless);
         // Al cambiar la cola y luego `playWhenReady`, ExoPlayer pasaría un momento por «en pausa» y la app quitaría la
         // rueda de carga mientras NewPipe extrae el audio. Se avisa un solo estado al final: «cargando» (o «en pausa»).
         loading = true;
@@ -248,6 +278,7 @@ public final class PlaybackService extends MediaSessionService {
             loading = false;
         }
         notifyState();
+        checkQueue(false);
     }
 
     private void loadItems(List<MediaItem> before, MediaItem current, List<MediaItem> after, long startMs,
@@ -273,12 +304,25 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     /** La app cambió su cola (agregaste, quitaste o moviste canciones). Si ya suena otra, espera a que la app se entere. */
-    void setNeighbors(String currentId, List<MediaItem> before, List<MediaItem> after) {
+    void setNeighbors(String currentId, List<MediaItem> before, List<MediaItem> after, boolean endless) {
         final MediaItem current = player.getCurrentMediaItem();
         if (current == null || !current.mediaId.equals(currentId)) return;
+        fromApp(current, after, endless);
         replaceBefore(before);
         replaceAfter(after);
         prefetchNext();
+        checkQueue(false);
+    }
+
+    /** La cola que mandó la app manda desde aquí: lo que el servicio iba a agregar solo ya no hace falta. */
+    private void fromApp(MediaItem current, List<MediaItem> after, boolean endless) {
+        appLastId = after.isEmpty() ? current.mediaId : after.get(after.size() - 1).mediaId;
+        autoIds.clear();
+        extendRequest++;
+        main.removeCallbacks(autoExtend);
+        if (this.endless == endless) return;
+        this.endless = endless;
+        getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit().putBoolean("endless", endless).apply();
     }
 
     void play() {
@@ -483,6 +527,97 @@ public final class PlaybackService extends MediaSessionService {
         if (extra > 0) player.removeMediaItems(0, extra);
     }
 
+    /**
+     * Quedan pocas por sonar: al cambiar de canción se le avisa a la app para que mande más. Si ya no queda ninguna y la
+     * app no manda más (dormida en segundo plano o cerrada), el servicio sigue solo (autoExtend).
+     */
+    private void checkQueue(boolean notify) {
+        final int left = player.getMediaItemCount() - 1 - player.getCurrentMediaItemIndex();
+        if (notify && left <= LOW_QUEUE && events != null) events.onQueueLow();
+        if (left <= 0) scheduleExtend(APP_GRACE_MS);
+    }
+
+    /** Con la app conectada se le da un margen para mandar las suyas; sin ella, se sigue enseguida. */
+    private void scheduleExtend(long graceMs) {
+        main.removeCallbacks(autoExtend);
+        if (endless) main.postDelayed(autoExtend, events != null ? graceMs : 0);
+    }
+
+    /**
+     * La cola se acabó y la app no mandó más: el servicio sigue solo con canciones parecidas a la que suena, las
+     * «relacionadas» que NewPipe ya trajo al extraerla (sin consultas de más; si esa no se pudo extraer, las de la
+     * anterior). Cuando la app despierta, su Fila Dinámica vuelve a mandar.
+     */
+    private void autoExtend() {
+        final MediaItem item = player.getCurrentMediaItem();
+        if (!endless || item == null || player.hasNextMediaItem() || player.getRepeatMode() != Player.REPEAT_MODE_OFF) return;
+        final String seed = item.mediaId;
+        final int index = player.getCurrentMediaItemIndex();
+        final String fallback = index > 0 ? player.getMediaItemAt(index - 1).mediaId : null;
+        final int request = ++extendRequest;
+        StreamResolver.related(seed)
+                .handle((related, error) -> related)
+                .thenCompose((related) -> related != null && !related.isEmpty() || fallback == null
+                        ? CompletableFuture.completedFuture(related)
+                        : StreamResolver.related(fallback).handle((other, error) -> other))
+                .thenAccept((related) -> main.post(() -> {
+                    if (instance == null || request != extendRequest) return;
+                    final MediaItem now = player.getCurrentMediaItem();
+                    if (now == null || !now.mediaId.equals(seed) || player.hasNextMediaItem()) return;
+                    final List<MediaItem> picks = pickRelated(related);
+                    if (picks.isEmpty()) {
+                        Log.w(TAG, "No hay canciones parecidas para seguir después de " + seed);
+                        return;
+                    }
+                    player.addMediaItems(picks);
+                    if (player.getPlayerError() != null) {
+                        // La última no se pudo reproducir: se quita (como en onError) y suena la primera parecida.
+                        skippedFailed = seed;
+                        player.removeMediaItem(player.getCurrentMediaItemIndex());
+                        player.prepare();
+                    } else if (player.getPlaybackState() == Player.STATE_ENDED) {
+                        advancing = true;
+                        player.seekTo(player.getCurrentMediaItemIndex() + 1, 0);
+                    }
+                    prefetchNext();
+                }));
+    }
+
+    /** Las parecidas que no sonaron hace poco ni están en la cola, como mucho 2 del mismo artista. */
+    private List<MediaItem> pickRelated(@Nullable List<StreamResolver.Related> related) {
+        final List<MediaItem> picks = new ArrayList<>();
+        if (related == null) return picks;
+        final Set<String> used = new HashSet<>(recent);
+        for (int i = 0; i < player.getMediaItemCount(); i++) used.add(player.getMediaItemAt(i).mediaId);
+        final Map<String, Integer> perArtist = new HashMap<>();
+        for (final StreamResolver.Related song : related) {
+            if (picks.size() >= AUTO_BATCH) break;
+            final String artist = song.artist.toLowerCase(Locale.ROOT);
+            final int count = perArtist.containsKey(artist) ? perArtist.get(artist) : 0;
+            if (count >= AUTO_PER_ARTIST || !used.add(song.id)) continue;
+            perArtist.put(artist, count + 1);
+            final JSONObject track = new JSONObject();
+            try {
+                track.put("id", song.id).put("title", song.title).put("artist", song.artist).put("artwork", song.artwork);
+            } catch (JSONException ignored) {
+                // no pasa con textos
+            }
+            autoIds.add(song.id);
+            picks.add(mediaItem(track));
+        }
+        return picks;
+    }
+
+    /** Las que ya sonaron (las más viejas salen): al seguir solo no se repiten. */
+    private void remember(String videoId) {
+        recent.remove(videoId);
+        recent.add(videoId);
+        if (recent.size() <= RECENT_LIMIT) return;
+        final Iterator<String> oldest = recent.iterator();
+        oldest.next();
+        oldest.remove();
+    }
+
     /** Pre-carga: la URL de la siguiente se extrae mientras suena la actual, así «siguiente» no espera a NewPipe. */
     private void prefetchNext() {
         final int next = player.getNextMediaItemIndex();
@@ -519,7 +654,11 @@ public final class PlaybackService extends MediaSessionService {
         final boolean skip = failures <= MAX_FAILURES && player.hasNextMediaItem();
         Log.w(TAG, "No se pudo reproducir " + videoId + (skip ? ", pasando a la siguiente" : ""), error);
         if (events != null) events.onTrackFailed(videoId, message(error), false, skip);
-        if (!skip) return;
+        if (!skip) {
+            // Falló la última: con la Fila Dinámica, si la app no manda más, el servicio sigue solo con parecidas.
+            if (failures <= MAX_FAILURES) scheduleExtend(ENDED_GRACE_MS);
+            return;
+        }
         // Se quita de la cola (así «anterior» no vuelve a ella) y suena la siguiente.
         skippedFailed = videoId;
         player.removeMediaItem(player.getCurrentMediaItemIndex());
@@ -592,13 +731,15 @@ public final class PlaybackService extends MediaSessionService {
             if (item == null) return;
             retried = null;
             final String cause = skippedFailed != null ? "failed"
-                    : reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ? "auto" : "seek";
+                    : reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || advancing ? "auto" : "seek";
             skippedFailed = null;
+            advancing = false;
+            remember(item.mediaId);
             prefetchNext();
             main.post(PlaybackService.this::trimBehind);
-            if (events != null && reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
-                events.onTrackChanged(item.mediaId, cause);
-            }
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) return;
+            if (events != null) events.onTrackChanged(item.mediaId, cause, autoIds.contains(item.mediaId) ? appLastId : null);
+            checkQueue(true);
         }
 
         @Override
@@ -613,6 +754,8 @@ public final class PlaybackService extends MediaSessionService {
         @Override
         public void onPlaybackStateChanged(int playbackState) {
             notifyState();
+            // Se acabó la cola: si la app no manda más enseguida, el servicio sigue solo (con la Fila Dinámica).
+            if (playbackState == Player.STATE_ENDED) scheduleExtend(ENDED_GRACE_MS);
         }
 
         @Override

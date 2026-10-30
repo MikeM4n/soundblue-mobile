@@ -27,6 +27,9 @@ export interface Neighbors {
   history: readonly Track[] // las que alcanza «anterior», de la más vieja a la más reciente
   upcoming: readonly Track[] // las próximas, en el orden en que van a sonar
   album?: string // de dónde suena (para la notificación, si la canción no trae álbum)
+  // Fila Dinámica (y sin «repetir»): si se le acaban las próximas y la app no le manda más (dormida en segundo plano o
+  // cerrada), el reproductor nativo sigue solo con canciones parecidas en vez de detenerse.
+  endless: boolean
 }
 
 export interface LoadOptions extends Neighbors {
@@ -46,10 +49,13 @@ export interface PlaybackFailure {
 
 export interface BackendEvents {
   onState(state: BackendState): void
-  onTrack(id: string, reason: TrackChange, state: BackendState): void
+  /** `after`: la canción es de las que el reproductor nativo agregó solo, después de `after` (la última que le mandó la app). */
+  onTrack(id: string, reason: TrackChange, state: BackendState, after?: string): void
   onFailed(failure: PlaybackFailure): void
   /** El reproductor nativo ya sonaba sin que la app lo pidiera (p. ej. lo arrancó el widget con la app cerrada). */
   onAttach(id: string, state: BackendState): void
+  /** Al reproductor nativo le quedan 3 o menos por sonar: hay que mandarle más. */
+  onQueueLow(): void
 }
 
 /** Lo que el motor necesita de un reproductor de audio. */

@@ -32,7 +32,7 @@ import { logDuplicate } from '../lib/duplicateLog'
 import { hashText, seededRandom, sessionSeed, shuffle } from '../lib/random'
 import type { Track } from '../player/types'
 import { artistTopSongs } from './artistTop'
-import { clashes, dominantGenres, genreIndexSoon, genreLabel, genreScope, genresOf, type GenreIndex, type GenreKey, type GenreScope } from './genreIndex'
+import { clashes, dominantGenres, genreIndex, genreIndexSoon, genreLabel, genreScope, genresOf, type GenreIndex, type GenreKey, type GenreScope } from './genreIndex'
 import { artistKey, listening } from './history'
 import { ytmRadioItems, ytmSearchArtists, type RadioItem } from './ytmusic'
 import { favoriteGenres } from './favoriteGenres'
@@ -227,8 +227,8 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
     for (const candidate of shuffle(accepted, random)) (candidate.reason === 'mismo artista' ? same : others).push(candidate)
   }
 
-  const init = async () => {
-    const [radio, found] = await Promise.all([ytmRadioItems(seed.id).catch(() => []), preferred.size ? import('./genreIndex').then((m) => m.genreIndex().catch(() => null)) : genreIndexSoon(INDEX_WAIT_MS)])
+  /** Con el índice: el género de la semilla (o el de la mayoría de su radio) y lo que acepta la radio. */
+  const useIndex = (found: GenreIndex | null, radio: readonly RadioItem[]) => {
     index = found
     let seedGenres = fixedGenres ? new Set(fixedGenres) : index ? genresOf(seed, index) : new Set<GenreKey>()
     // Si el índice no conoce la canción que suena, su género es el de la mayoría de su radio de YouTube Music.
@@ -236,11 +236,40 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
     if (index && guessed) seedGenres = dominantGenres(radio.map((item) => item.track), index)
     scope = genreScope(seedGenres)
     Object.assign(diagnostics, {
-      seedYear: radio.find((item) => item.track.id === seed.id)?.year,
       genres: [...seedGenres].map(genreLabel),
       guessed: guessed && seedGenres.size > 0,
       accepts: [...scope.accepts].map(genreLabel),
     })
+  }
+
+  /** Las que esperan turno pasan otra vez por el filtro de género (el índice llegó después de armarse la radio). */
+  const refilter = () => {
+    for (const pool of [same, others]) {
+      for (let i = pool.length - 1; i >= 0; i--) {
+        const miss = genreMiss(pool[i].track)
+        if (!miss) continue
+        filtered[miss]++
+        pool.splice(i, 1)
+      }
+    }
+  }
+
+  const init = async () => {
+    const [radio, found] = await Promise.all([ytmRadioItems(seed.id).catch(() => []), preferred.size ? genreIndex().catch(() => null) : genreIndexSoon(INDEX_WAIT_MS)])
+    useIndex(found, radio)
+    diagnostics.seedYear = radio.find((item) => item.track.id === seed.id)?.year
+    // La primera vez el índice tarda en armarse y la radio no lo espera: en cuanto llega, se aplica a lo que falta (antes
+    // la radio se quedaba sin filtro de género mientras durara).
+    if (!found) {
+      void genreIndex()
+        .then((late) => {
+          if (!late.size || index) return
+          useIndex(late, radio)
+          refilter()
+          writeDiagnostics()
+        })
+        .catch(() => {})
+    }
     add(radio, 'mismo género')
     if (artistTop) {
       const name = firstArtist(seed.artist)

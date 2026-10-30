@@ -37,12 +37,13 @@ interface NativePlayerPlugin {
     history: NativeTrack[]
     current: NativeTrack
     upcoming: NativeTrack[]
+    endless: boolean
     start: number
     autoplay: boolean
     volume: number
     seq: number
   }): Promise<void>
-  setNeighbors(options: { currentId: string; history: NativeTrack[]; upcoming: NativeTrack[] }): Promise<void>
+  setNeighbors(options: { currentId: string; history: NativeTrack[]; upcoming: NativeTrack[]; endless: boolean }): Promise<void>
   play(): Promise<void>
   pause(): Promise<void>
   seek(options: { seconds: number }): Promise<void>
@@ -52,9 +53,10 @@ interface NativePlayerPlugin {
   setLiked(options: { id: string; liked: boolean }): Promise<void>
   getState(): Promise<NativeState>
   addListener(eventName: 'state', listener: (state: NativeState) => void): Promise<PluginListenerHandle>
-  addListener(eventName: 'trackChanged', listener: (event: NativeState & { id: string; reason: TrackChange }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'trackChanged', listener: (event: NativeState & { id: string; reason: TrackChange; after?: string }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'trackFailed', listener: (event: PlaybackFailure & { seq?: number }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'likeToggle', listener: (event: { id: string }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'queueLow', listener: () => void): Promise<PluginListenerHandle>
 }
 
 // android/app/src/main/java/com/soundblue/mobile/PlaybackPlugin.java
@@ -72,8 +74,8 @@ function nativeTrack(track: Track, album?: string): NativeTrack {
   }
 }
 
-const neighborsKey = (track: Track, { history, upcoming }: Neighbors) =>
-  [track.id, history.map((t) => t.id).join(','), upcoming.map((t) => t.id).join(',')].join('|')
+const neighborsKey = (track: Track, { history, upcoming, endless }: Neighbors) =>
+  [track.id, history.map((t) => t.id).join(','), upcoming.map((t) => t.id).join(','), endless].join('|')
 
 /**
  * Reproductor nativo de Android (PlaybackService: ExoPlayer + NewPipe). El motor le pasa la canción con sus vecinas y él
@@ -114,6 +116,7 @@ export class NativePlayerBackend implements MediaBackend {
       history: options.history.map((t) => nativeTrack(t, options.album)),
       current: nativeTrack(track, options.album),
       upcoming: options.upcoming.map((t) => nativeTrack(t, options.album)),
+      endless: options.endless,
       start: options.start,
       autoplay: options.autoplay,
       volume: this.volume,
@@ -135,7 +138,13 @@ export class NativePlayerBackend implements MediaBackend {
       currentId: track.id,
       history: neighbors.history.map((t) => nativeTrack(t, neighbors.album)),
       upcoming: neighbors.upcoming.map((t) => nativeTrack(t, neighbors.album)),
+      endless: neighbors.endless,
     }).catch(ignore)
+  }
+
+  /** El próximo `sync` manda las vecinas aunque no hayan cambiado (el nativo pudo quitar las que fallaron). */
+  resend() {
+    this.sent = ''
   }
 
   play() {
@@ -192,10 +201,16 @@ export class NativePlayerBackend implements MediaBackend {
     if (!id) return // no tiene nada cargado
     this.loaded = true
     this.read(state)
-    if (state.title && !this.known.has(id)) {
+    this.learn(state)
+    this.events.onAttach(id, state.status)
+  }
+
+  /** La canción que suena en el nativo, si la app no la conoce (la arrancó el widget o la agregó él solo). */
+  private learn(state: NativeState) {
+    const id = state.id
+    if (id && state.title && !this.known.has(id)) {
       this.known.set(id, { id, title: state.title, artist: state.artist ?? '', artwork: state.artwork || undefined })
     }
-    this.events.onAttach(id, state.status)
   }
 
   /** Una canción que se le mandó al reproductor nativo (por si avanzó a una que el motor ya no tiene en su cola). */
@@ -228,10 +243,14 @@ export class NativePlayerBackend implements MediaBackend {
       if (!this.loaded) return this.attachTo(event)
       this.duration = 0 // la de la canción anterior ya no vale
       this.read(event)
-      this.events.onTrack(event.id, event.reason, event.status)
+      this.learn(event)
+      this.events.onTrack(event.id, event.reason, event.status, event.after || undefined)
     })
     void NativePlayer.addListener('trackFailed', (failure) => {
       if (!this.stale(failure)) this.events.onFailed(failure)
+    })
+    void NativePlayer.addListener('queueLow', () => {
+      if (this.loaded) this.events.onQueueLow()
     })
   }
 

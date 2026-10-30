@@ -135,6 +135,7 @@ export class PlayerEngine {
   private poolsDone = new Set<RecsKind>() // la radio ya no tiene más de ese bloque
   private poolsLoading: Promise<void> | null = null // pedido en curso (uno a la vez)
   private poolSeed: string | null = null
+  private continuedFrom: string | null = null // canción desde la que ya se siguió con otra radio (continueRadio)
   private discarded = new Set<string>() // descartadas en las pestañas: esta radio no las vuelve a dar
   private resumeWhenOnline = false // falló por falta de internet: al volver la conexión, suena sola
   private playingWhenOffline = false // sonaba cuando se fue internet
@@ -148,9 +149,10 @@ export class PlayerEngine {
   constructor() {
     this.audio = new NativePlayerBackend({
       onState: (state) => this.current && this.onBackendState(state),
-      onTrack: (id, reason, state) => this.onNativeTrack(id, reason, state),
+      onTrack: (id, reason, state, after) => this.onNativeTrack(id, reason, state, after),
       onFailed: (failure) => this.onNativeFailure(failure),
       onAttach: (id, state) => this.onNativeAttach(id, state),
+      onQueueLow: () => this.onQueueLow(),
     })
     this.restore()
     this.applyVolume() // queda guardado: se aplica al cargar la primera canción
@@ -162,8 +164,11 @@ export class PlayerEngine {
     // se salta nada; al volver la conexión sigue la misma lista donde iba.
     window.addEventListener('offline', () => this.onOffline())
     window.addEventListener('online', () => this.onOnline())
-    // Al encender la Fila Dinámica, la cola se completa enseguida.
-    settings.subscribe(() => void this.extendRadio())
+    // Al encender la Fila Dinámica, la cola se completa enseguida (y el reproductor nativo sabe si puede seguir solo).
+    settings.subscribe(() => {
+      void this.extendRadio()
+      this.syncNative()
+    })
   }
 
   // ---- Suscripción para React (useSyncExternalStore) ----
@@ -276,7 +281,28 @@ export class PlayerEngine {
       this.changed()
     }
     this.topUp()
+    this.continueRadio()
     return this.fillPools()
+  }
+
+  /**
+   * La radio se acabó (ya no da más que cumplan sus reglas, o su consulta falló) y faltan canciones: sigue una radio
+   * nueva a partir de la que suena, sin quitar lo que ya agregó la Fila Dinámica. Antes la cola se vaciaba y la música
+   * se detenía. Una vez por canción: si la nueva tampoco da (p. ej. sin conexión), se intenta con la siguiente.
+   */
+  private continueRadio() {
+    const context = this.context
+    const seed = this.current
+    if (!context || !seed || !this.radioMore || this.repeat !== 'off' || !settings.get().dynamicQueue) return
+    if (this.poolsLoading || this.continuedFrom === seed.id || this.upcomingCount() >= MIN_UPCOMING) return
+    if (RECS_KINDS.some((kind) => this.pools[kind].length || !this.poolsDone.has(kind))) return
+    this.continuedFrom = seed.id
+    const { radioOwn, discarded } = this
+    this.startRecommendations(seed, this.radioFor(seed, context))
+    this.radioOwn = new Set([...radioOwn, seed.id]) // lo que trajo la anterior sigue siendo de la radio: al sonar no arma otra
+    this.discarded = discarded
+    this.changed()
+    void this.fillPools()
   }
 
   /**
@@ -287,7 +313,7 @@ export class PlayerEngine {
     const context = this.context
     if (!context || !this.current || !settings.get().dynamicQueue) return
     const added: RadioPick[] = []
-    for (let remaining = this.queue.length + (this.order.length - this.pos - 1); remaining < MIN_UPCOMING; remaining++) {
+    for (let remaining = this.upcomingCount(); remaining < MIN_UPCOMING; remaining++) {
       const kind = RECS_KINDS.find((k) => this.pools[k].length)
       if (!kind) break
       added.push({ track: this.pools[kind].shift()!, group: { kind, seed: this.poolSeed ?? '' } })
@@ -340,6 +366,7 @@ export class PlayerEngine {
         this.emit()
         // La Fila Dinámica pudo tomar de ellas mientras llegaban: otra tanda si hace falta (y si esta sirvió).
         if (progress && this.radioMore === more && low().length) void this.fillPools()
+        else this.continueRadio()
       })
     this.poolsLoading = request
     this.emit()
@@ -717,6 +744,11 @@ export class PlayerEngine {
     return this.context ? this.order.slice(this.pos + 1) : []
   }
 
+  /** Cuántas quedan por sonar: tu cola y lo que sigue de la lista. */
+  private upcomingCount(): number {
+    return this.queue.length + (this.context ? this.order.length - this.pos - 1 : 0)
+  }
+
   private hasNext(): boolean {
     return this.peekNext() !== null
   }
@@ -792,8 +824,9 @@ export class PlayerEngine {
    * El reproductor nativo pasó a otra canción por su cuenta: terminó la anterior, se tocó «siguiente» o «anterior» en la
    * notificación, los audífonos o el reloj, o saltó una que no se pudo reproducir. La cola de aquí se pone al día (pudo
    * avanzar varias mientras la app dormía en segundo plano). Si el cambio lo pidió la app, ya está al día.
+   * `after`: se le acabaron las que le mandó la app y siguió solo con parecidas; lo de aquí hasta `after` ya sonó.
    */
-  private onNativeTrack(id: string, reason: TrackChange, state: BackendState) {
+  private onNativeTrack(id: string, reason: TrackChange, state: BackendState, after?: string) {
     const current = this.current
     if (!current || current.id === id) return
     const previous = this.peekPrevious()
@@ -812,6 +845,7 @@ export class PlayerEngine {
       this.noteSkip()
     }
     for (let step = 0; step <= NATIVE_AHEAD; step++) {
+      if (after && this.current?.id === after) break // lo que sigue ya lo eligió el reproductor nativo
       const target = this.peekNext()
       if (!target) break
       if (target.fromQueue) this.queue.shift()
@@ -823,6 +857,15 @@ export class PlayerEngine {
         this.adopt(target.track, target.fromQueue, state)
         return
       }
+    }
+    // El reproductor nativo siguió solo: la que suena queda como actual y sigue la radio de ahora (no se arma otra a
+    // partir de ella); lo que la Fila Dinámica tenga después llega al nativo en lugar de las que agregó él.
+    const own = after && this.current?.id === after ? this.audio.trackFor(id) : undefined
+    if (own) {
+      if (reason !== 'failed') this.pushHistory()
+      if (this.radioMore) this.radioOwn.add(own.id)
+      this.adopt(own, true, state)
+      return
     }
     // No está en la cola de aquí (cambió mientras tanto): se respeta lo que suena y se le vuelve a mandar la cola.
     this.pos = before.pos
@@ -889,13 +932,24 @@ export class PlayerEngine {
     }
     const previous = this.peekPrevious()
     const history = this.history.length ? this.history.slice(-NATIVE_BEHIND).map((step) => step.track) : previous ? [previous.track] : []
-    return { history, upcoming, album: this.context?.name }
+    const endless = settings.get().dynamicQueue && this.repeat === 'off'
+    return { history, upcoming, album: this.context?.name, endless }
   }
 
   /** Cada cambio de la cola (agregar, quitar, mover, la Fila Dinámica, aleatorio, repetir) llega al reproductor nativo. */
   private syncNative() {
     const track = this.current
     if (track && this.loadedId === track.id) this.backend.sync(track, this.neighbors(), this.repeat === 'one')
+  }
+
+  /**
+   * Al reproductor nativo le quedan 3 o menos por sonar (p. ej. la app estuvo dormida en segundo plano): se le manda la
+   * cola completa otra vez, aunque aquí no haya cambiado, y la Fila Dinámica repone lo que falte.
+   */
+  private onQueueLow() {
+    this.audio.resend()
+    this.syncNative()
+    void this.extendRadio()
   }
 
   private onBackendState(state: BackendState) {
@@ -1011,6 +1065,7 @@ export class PlayerEngine {
       this.error = null
       this.emit()
     }
+    this.continuedFrom = null // la radio que no pudo seguir sin conexión lo intenta otra vez
     void this.extendRadio()
   }
 

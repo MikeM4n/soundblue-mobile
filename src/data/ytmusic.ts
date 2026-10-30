@@ -22,6 +22,10 @@ const FILTER = {
   communityPlaylists: 'EgeKAQQoAEABagwQDhAKEAMQBRAJEAQ%3D',
 }
 const SEARCH_PLAYLISTS = 12 // playlists en Buscar (primero las de YouTube Music, después las de la comunidad)
+// Una consulta que no responde en este tiempo falla (y se reintenta después). Sin límite, una conexión que se cae a
+// mitad (p. ej. al pasar de wifi a datos con la pantalla apagada) dejaba la consulta esperando para siempre, y la Fila
+// Dinámica, que pide de a una, no volvía a pedir canciones: la música se detenía al acabarse la cola.
+const REQUEST_TIMEOUT_MS = 20_000
 
 /** Playlist, álbum o artista: se abre en su propia página (/ytm/:id). */
 export interface YtmCard {
@@ -64,6 +68,7 @@ async function call(endpoint: string, body: object, visitorData?: string, client
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ context: { client: { ...client, visitorData } }, ...body }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   })
   if (!response.ok) throw new Error(`YouTube Music respondió ${response.status}`)
   return response.json()
