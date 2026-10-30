@@ -1,6 +1,6 @@
 {
-  "versionCode": 10702,
-  "versionName": "1.7.2",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.7.2/SoundBlue.apk",
-  "changelog": "Versión de producción: firmada con la clave de SoundBlue, más liviana y más segura."
+  "versionCode": 10703,
+  "versionName": "1.7.3",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.7.3/SoundBlue.apk",
+  "changelog": "La música ya no se detiene tras 10 canciones, Selecciones rápidas en el orden que elegiste y recomendaciones mejor filtradas por género."
 }
