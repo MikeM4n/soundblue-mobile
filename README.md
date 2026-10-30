@@ -98,7 +98,6 @@ La app se actualiza sola a partir de [`version.json`](version.json), en la raíz
 - JDK 21 y Android SDK 36. El script usa `JAVA_HOME` y `ANDROID_HOME`, o los encuentra en
   `%LOCALAPPDATA%\SoundBlueAndroidBuild` si no están definidos.
 - Un archivo `.env` con la dirección del intermediario del catálogo (ver [`.env.example`](.env.example)).
-- La clave de firma y `android/keystore.properties` (ver «Firma»).
 
 ### Compilar
 ```bash
@@ -114,20 +113,6 @@ producción firmado.
 3. En GitHub, crea el release `v1.7.3` y adjunta `SoundBlue.apk` con ese nombre exacto.
 4. Después de publicar el release, actualiza `version.json` y súbelo a `main`. Si se sube antes, la descarga falla.
    GitHub puede tardar hasta 5 minutos en mostrar el archivo nuevo.
-
-### Firma
-El APK se firma con la clave indicada en `android/keystore.properties`:
-
-```properties
-storeFile=C:/ruta/a/soundblue.keystore
-storePassword=…
-keyAlias=soundblue
-keyPassword=…
-```
-
-Ni la clave ni ese archivo se suben al repositorio (están en `.gitignore`). Hay que firmar siempre con la misma clave:
-con otra, Android rechaza la actualización y habría que desinstalar la app, perdiendo sus datos. Guarda un respaldo de la
-clave y de su contraseña.
 
 ## ⚠️ Aviso
 
