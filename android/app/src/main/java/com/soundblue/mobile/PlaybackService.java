@@ -96,6 +96,9 @@ public final class PlaybackService extends MediaSessionService {
     /** Comando de sesión del corazón del widget: «Me gusta» / quitar de Tus me gusta la que suena. */
     public static final String ACTION_TOGGLE_LIKE = "com.soundblue.mobile.TOGGLE_LIKE";
     private static final SessionCommand TOGGLE_LIKE = new SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY);
+    /** El hueco invisible antes del ♥ en los controles de medios de Android 13+ (likeButtons): no hace nada. */
+    private static final String ACTION_SPACER = "com.soundblue.mobile.SPACER";
+    private static final SessionCommand SPACER = new SessionCommand(ACTION_SPACER, Bundle.EMPTY);
     /** ▶ del widget con la app cerrada: Android arranca el servicio en primer plano y suena la última cola guardada. */
     public static final String ACTION_RESUME_FROM_WIDGET = "com.soundblue.mobile.RESUME_FROM_WIDGET";
     private static final String QUEUE_PREFS = "soundblue_queue"; // la cola, dónde iba y las que te gustan
@@ -422,12 +425,25 @@ public final class PlaybackService extends MediaSessionService {
         session.setMediaButtonPreferences(likeButtons(liked));
     }
 
+    /**
+     * ⏮ ⏯ ⏭ ♥. En la notificación (Android 12 o antes) el ♥ va después de ⏭. Desde Android 13 los controles de medios y la
+     * pantalla bloqueada no siguen ese orden: ⏮ ⏯ ⏭ van fijos y las acciones propias llenan los huecos, y capas como la de
+     * OPPO/realme tienen uno a cada lado y ponen la primera a la izquierda. Un hueco invisible delante deja el ♥ a la derecha.
+     */
     private static List<CommandButton> likeButtons(boolean liked) {
-        return ImmutableList.of(new CommandButton.Builder(liked ? CommandButton.ICON_HEART_FILLED : CommandButton.ICON_HEART_UNFILLED)
+        final CommandButton heart = new CommandButton.Builder(liked ? CommandButton.ICON_HEART_FILLED : CommandButton.ICON_HEART_UNFILLED)
                 .setDisplayName(liked ? "Quitar de Tus me gusta" : "Me gusta")
                 .setSessionCommand(TOGGLE_LIKE)
                 .setSlots(CommandButton.SLOT_OVERFLOW) // después de ⏮ ⏯ ⏭, que siguen en su sitio
-                .build());
+                .build();
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return ImmutableList.of(heart);
+        final CommandButton spacer = new CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+                .setCustomIconResId(R.drawable.media_spacer)
+                .setDisplayName(" ") // Android no acepta una acción sin nombre
+                .setSessionCommand(SPACER)
+                .setSlots(CommandButton.SLOT_OVERFLOW)
+                .build();
+        return ImmutableList.of(spacer, heart);
     }
 
     // ---- Seguir desde el widget con la app cerrada ----
@@ -844,7 +860,7 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     /**
-     * Lo que la sesión acepta además de lo normal: el corazón, solo desde la propia app (el widget y la notificación, que
+     * Lo que la sesión acepta además de lo normal: el corazón (y su hueco), solo desde la propia app (el widget y la notificación, que
      * es la que usa Android para la pantalla bloqueada y los controles de medios).
      */
     private final class SessionCallback implements MediaSession.Callback {
@@ -854,7 +870,7 @@ public final class PlaybackService extends MediaSessionService {
                 return MediaSession.Callback.super.onConnect(session, controller);
             }
             final SessionCommands commands =
-                    MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon().add(TOGGLE_LIKE).build();
+                    MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon().add(TOGGLE_LIKE).add(SPACER).build();
             final MediaItem item = player.getCurrentMediaItem();
             return new MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .setAvailableSessionCommands(commands)
@@ -867,6 +883,9 @@ public final class PlaybackService extends MediaSessionService {
                                                                SessionCommand command, Bundle args) {
             if (ACTION_TOGGLE_LIKE.equals(command.customAction)) {
                 toggleLike();
+                return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
+            }
+            if (ACTION_SPACER.equals(command.customAction)) {
                 return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
             }
             return MediaSession.Callback.super.onCustomCommand(session, controller, command, args);
