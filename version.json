@@ -1,6 +1,6 @@
 {
-  "versionCode": 10800,
-  "versionName": "1.8.0",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.8.0/SoundBlue.apk",
-  "changelog": "Personaliza los géneros de Rumba, Tomar y Relax, dale ♥ a la canción desde la notificación o la pantalla bloqueada, y el corazón del widget ya funciona con la app cerrada."
+  "versionCode": 10801,
+  "versionName": "1.8.1",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.8.1/SoundBlue.apk",
+  "changelog": "El ♥ de la pantalla bloqueada y de los controles de medios ahora va al final, a la derecha de ⏭."
 }
