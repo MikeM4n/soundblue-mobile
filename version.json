@@ -1,6 +1,6 @@
 {
-  "versionCode": 10801,
-  "versionName": "1.8.1",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.8.1/SoundBlue.apk",
-  "changelog": "El ♥ de la pantalla bloqueada y de los controles de medios ahora va al final, a la derecha de ⏭."
+  "versionCode": 10901,
+  "versionName": "1.9.1",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.9.1/SoundBlue.apk",
+  "changelog": "Modo sin conexión: sin internet la música sigue con canciones guardadas en el teléfono (elige 15, 30, 50 o 100 y si se descargan solo con Wi-Fi). Además, Buscar trae cualquier canción aunque tenga pocas vistas, importas cualquier playlist pública, los Modos cargan al instante y no se repite lo que escuchaste en las últimas 24 h."
 }
