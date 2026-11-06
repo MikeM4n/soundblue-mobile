@@ -1,6 +1,6 @@
 {
-  "versionCode": 10901,
-  "versionName": "1.9.1",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v1.9.1/SoundBlue.apk",
-  "changelog": "Modo sin conexión: sin internet la música sigue con canciones guardadas en el teléfono (elige 15, 30, 50 o 100 y si se descargan solo con Wi-Fi). Además, Buscar trae cualquier canción aunque tenga pocas vistas, importas cualquier playlist pública, los Modos cargan al instante y no se repite lo que escuchaste en las últimas 24 h."
+  "versionCode": 20000,
+  "versionName": "2.0.0",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.0.0/SoundBlue.apk",
+  "changelog": "Descargas como en Spotify: descarga Tus me gusta, tus playlists o cualquier playlist de YouTube (o una canción desde ⋮) y escúchalas sin internet. Cada canción muestra si está descargada, elige en Ajustes cuántas guardar (de 50 a 1000) y, si se llena, se borran primero las que menos escuchas."
 }
