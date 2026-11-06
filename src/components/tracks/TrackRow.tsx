@@ -3,6 +3,7 @@ import { useState, useSyncExternalStore, type CSSProperties, type ReactNode } fr
 import { formatDuration } from '../../lib/format'
 import { coverSources, type Track } from '../../player/types'
 import { onlyInYouTubeMusic } from '../../player/unavailable'
+import { DownloadBadge } from '../offline/Downloads'
 import { Cover } from '../ui/Cover'
 import { TrackMenu } from './TrackMenu'
 import { addToSiguientes, playNext, removeWithUndo, type RemoveAction } from './trackActions'
@@ -26,6 +27,8 @@ export interface TrackRowProps {
   swipe?: 'lista' | 'cola' | 'sugerencia'
   // Sin gestos de deslizar (carruseles de Inicio): deslizar de lado mueve el carrusel. Queda el ▶ y el menú «⋮».
   plain?: boolean
+  // Listas con «Descargar» (Tus me gusta, playlists, álbumes): ✓ descargada, flecha girando o nube vacía. Si no, solo el ✓.
+  downloads?: boolean
 }
 
 /**
@@ -35,7 +38,7 @@ export interface TrackRowProps {
  * sonar» la quita de la cola o descarta la recomendación (con «Deshacer»); en las listas abre el menú. Tocar «⋮» siempre
  * abre el menú.
  */
-export function TrackRow({ track, onPlay, position, isCurrent, isPlaying, duration, removeAction, trailing, style, swipe: mode = 'lista', plain = false }: TrackRowProps) {
+export function TrackRow({ track, onPlay, position, isCurrent, isPlaying, duration, removeAction, trailing, style, swipe: mode = 'lista', plain = false, downloads = false }: TrackRowProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const openMenu = () => window.setTimeout(() => setMenuOpen(true), SNAP_BACK_MS)
   const inQueue = mode === 'cola'
@@ -101,6 +104,7 @@ export function TrackRow({ track, onPlay, position, isCurrent, isPlaying, durati
               <span className="truncate">{track.title}</span>
             </span>
             <span className="flex items-center gap-1.5 text-sm text-texto-sec">
+              <DownloadBadge id={track.id} full={downloads} />
               {/* Solo se marca la que no suena aquí (al tocarla se ofrece abrirla en la app de YouTube Music). */}
               {onlyInYtm && (
                 <span className="shrink-0 rounded bg-red-500/20 px-1 text-[10px] leading-4 font-semibold tracking-wide text-red-200 uppercase">No disponible aquí</span>

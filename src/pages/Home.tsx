@@ -32,7 +32,7 @@ import { showToast } from '../ui/toast'
 const HIDDEN_SHELVES = /selecciones r[aá]pidas|versiones|covers/i
 const MIN_TRACKS = 4 // un estante de canciones con menos, tras los filtros, no se muestra
 const YOUR_TILES = 4 // accesos con tus canciones bajo «Tus me gusta» y «Tu Top 50» (6 en total: filas completas)
-const OFFLINE_PLAYLISTS = 4 // playlists por género para la caché offline (hasta 100 canciones: hacen falta más que 2)
+const OFFLINE_PLAYLISTS = 3 // playlists por género para el respaldo offline (hasta 50 canciones, de todos tus géneros)
 let toldWaitingForWifi = false // «Esperando conexión Wi-Fi…»: una vez por sesión
 
 /**
@@ -218,8 +218,9 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
   useEffect(() => {
     if (Array.isArray(list)) offlineCache.offer(list)
   }, [list])
-  // Si faltan para el límite de Ajustes (o hay de más de 24 h para renovar) y se puede descargar ya, se le ofrecen las de
-  // TODOS tus géneros de aquí, mezcladas. Si toca esperar el Wi-Fi, un aviso corto (una vez por sesión). Al abrir Inicio.
+  // Si al respaldo le faltan (hasta 50, si caben en el límite de Ajustes) o hay de más de 24 h para renovar y se puede
+  // descargar ya, se le ofrecen las de TODOS tus géneros de aquí, mezcladas. Si toca esperar el Wi-Fi, un aviso corto (una
+  // vez por sesión). Al abrir Inicio.
   const genreKeys = genres.map((g) => g.key).join(',')
   useEffect(() => {
     if (!offlineCache.enabled) return
@@ -233,7 +234,7 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
         }
         return
       }
-      const perGenre = Math.ceil((status.target * 1.5) / genres.length) // de sobra: algunas no se pueden guardar
+      const perGenre = Math.ceil((status.autoTarget * 1.5) / genres.length) // de sobra: algunas no se pueden guardar
       const lists = await Promise.all(genres.map((source) => sourceTracks(source, perGenre, undefined, OFFLINE_PLAYLISTS).catch(() => [])))
       if (alive) offlineCache.offer(interleave(lists))
     })

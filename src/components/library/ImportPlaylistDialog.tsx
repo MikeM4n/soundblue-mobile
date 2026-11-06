@@ -1,9 +1,10 @@
-import { Download, LoaderCircle, X } from 'lucide-react'
+import { CloudDownload, Download, LoaderCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { importPlaylist } from '../../data/playlistImport'
 import { IMPORT_MAX, isPrivateAutoPlaylist, playlistIdFrom } from '../../data/ytmusic'
 import { library } from '../../library/store'
+import { offlineCache } from '../../player/offlineCache'
 import { coverSources, type Track } from '../../player/types'
 import { onlyInYouTubeMusic } from '../../player/unavailable'
 import { showToast } from '../../ui/toast'
@@ -68,6 +69,20 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
     showToast(
       added ? `${added === 1 ? '1 canción agregada' : `${added} canciones agregadas`} a Tus me gusta${already ? ` (${already} ya estaban)` : ''}` : 'Todas ya estaban en Tus me gusta',
       added ? { label: 'Deshacer', run: undo } : undefined,
+    )
+    onClose()
+  }
+
+  // «Agregar y descargar»: a Tus me gusta y, además, a las descargas (para escuchar sin conexión).
+  const addAndDownload = (found: Found) => {
+    const { added, undo } = library.addFavorites(found.tracks)
+    offlineCache.download(found.tracks)
+    const status = offlineCache.get()
+    const wait = !status.online ? ' (cuando vuelva internet)' : status.wifiOnly && !status.wifi ? ' (al conectarte a Wi-Fi)' : ''
+    showToast(
+      `${added ? `${added === 1 ? '1 canción agregada' : `${added} canciones agregadas`} a Tus me gusta` : 'Ya estaban en Tus me gusta'} · se descargan${wait}`,
+      added ? { label: 'Deshacer', run: undo } : undefined,
+      5000,
     )
     onClose()
   }
@@ -168,6 +183,17 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
             >
               Agregar todas a Me gusta
             </button>
+            {/* También descargarlas para escuchar sin conexión (Android). */}
+            {offlineCache.enabled && (
+              <button
+                type="button"
+                onClick={() => addAndDownload(found)}
+                className="mt-2 inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full bg-contraste/10 px-6 text-sm font-semibold hover:bg-contraste/15"
+              >
+                <CloudDownload className="size-4" aria-hidden="true" />
+                Agregar y descargar
+              </button>
+            )}
           </>
         )}
       </div>

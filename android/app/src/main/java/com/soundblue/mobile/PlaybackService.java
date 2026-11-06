@@ -140,6 +140,8 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     private static PlaybackService instance;
+    // De cada canción, si empezó a sonar desde su descarga (true) o por internet (resolve): así sigue igual al adelantar.
+    private static final java.util.concurrent.ConcurrentHashMap<String, Boolean> FROM_FILE = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private ExoPlayer player;
@@ -173,6 +175,7 @@ public final class PlaybackService extends MediaSessionService {
     private long savedPosition;
     private int savedRepeat = Player.REPEAT_MODE_OFF;
     private final Runnable offlineProbe = this::probeOnline;
+    private boolean backupBlocked; // la caché no suena (falló entera): no se vuelve a ella hasta que haya red o elijas otra
 
     static PlaybackService get() {
         return instance;
@@ -186,6 +189,7 @@ public final class PlaybackService extends MediaSessionService {
     public void onCreate() {
         super.onCreate();
         StreamResolver.init();
+        OfflineCache.init(this);
 
         final DataSource.Factory dataSource =
                 new ResolvingDataSource.Factory(new DefaultDataSource.Factory(this), PlaybackService::resolve);
@@ -298,6 +302,7 @@ public final class PlaybackService extends MediaSessionService {
         skippedFailed = null;
         waitingForNetwork = false;
         dropOffline(); // elegiste otra canción (o la app volvió a cargar la suya): manda la cola de la app
+        backupBlocked = false;
         fromApp(current, after, endless);
         // Al cambiar la cola y luego `playWhenReady`, ExoPlayer pasaría un momento por «en pausa» y la app quitaría la
         // rueda de carga mientras NewPipe extrae el audio. Se avisa un solo estado al final: «cargando» (o «en pausa»).
@@ -780,14 +785,38 @@ public final class PlaybackService extends MediaSessionService {
     private void prefetchNext() {
         if (offline) return; // la caché ya está en el teléfono (y sin internet no hay qué extraer)
         final int next = player.getNextMediaItemIndex();
-        if (next != C.INDEX_UNSET) StreamResolver.prefetch(player.getMediaItemAt(next).mediaId);
+        if (next == C.INDEX_UNSET) return;
+        final String videoId = player.getMediaItemAt(next).mediaId;
+        if (!OfflineCache.isCached(videoId)) StreamResolver.prefetch(videoId); // la descargada no necesita NewPipe
     }
 
-    /** soundblue://youtube/<id> → la URL de audio que da NewPipe. Corre en el hilo de carga de ExoPlayer. */
+    /**
+     * soundblue://youtube/<id> → si está descargada, su archivo del teléfono (sin internet ni NewPipe); si no, la URL de
+     * audio que da NewPipe. La fuente se decide al empezar la canción y se mantiene al adelantar (si se descargó mientras
+     * sonaba, sigue por internet hasta que vuelva a empezar). Corre en el hilo de carga de ExoPlayer.
+     */
     private static DataSpec resolve(DataSpec spec) throws IOException {
         if (!SCHEME.equals(spec.uri.getScheme())) return spec;
-        final String videoId = spec.uri.getLastPathSegment();
-        return spec.withUri(Uri.parse(StreamResolver.resolve(videoId == null ? "" : videoId).audioUrl));
+        final String segment = spec.uri.getLastPathSegment();
+        final String videoId = segment == null ? "" : segment;
+        final java.io.File file = OfflineCache.fileFor(videoId);
+        final Boolean pinned = spec.position == 0 ? null : FROM_FILE.get(videoId);
+        final boolean useFile = file != null && (pinned == null || pinned);
+        FROM_FILE.put(videoId, useFile);
+        if (useFile) return spec.withUri(Uri.fromFile(file));
+        return spec.withUri(Uri.parse(StreamResolver.resolve(videoId).audioUrl));
+    }
+
+    /** Sin internet: salta a la siguiente descargada de la cola (las que no lo están no pueden sonar). False si no hay. */
+    private boolean skipToDownloaded() {
+        for (int i = player.getCurrentMediaItemIndex() + 1; i < player.getMediaItemCount(); i++) {
+            if (!OfflineCache.isCached(player.getMediaItemAt(i).mediaId)) continue;
+            retried = null;
+            player.seekTo(i, 0);
+            player.prepare();
+            return true;
+        }
+        return false;
     }
 
     // ---- Errores ----
@@ -802,8 +831,9 @@ public final class PlaybackService extends MediaSessionService {
         }
         final boolean network = isNetworkError(error);
         if (network && !isOnline()) {
-            // Sin internet: suena la caché offline (si hay) hasta que vuelva la conexión; si no, la canción espera.
-            if (enterOffline(false)) return;
+            // Sin internet: sigue la siguiente descargada de la cola; si no queda ninguna, la caché offline en bucle hasta
+            // que vuelva la conexión; si tampoco hay, la canción espera.
+            if (skipToDownloaded() || enterOffline(false)) return;
             waitingForNetwork = true;
             if (events != null) events.onTrackFailed(videoId, "Sin conexión", true, false);
             return;
@@ -816,7 +846,7 @@ public final class PlaybackService extends MediaSessionService {
             return;
         }
         // Otra vez sin respuesta de la red (señal muy débil o una red sin salida a internet): la caché, en vez de saltar.
-        if (network && enterOffline(false)) return;
+        if (network && (skipToDownloaded() || enterOffline(false))) return;
         failures++;
         final boolean skip = failures <= MAX_FAILURES && player.hasNextMediaItem();
         // NewPipe no pudo con 10 seguidas: antes de quedarse en silencio, suena la caché (hasta que NewPipe vuelva a poder).
@@ -843,7 +873,7 @@ public final class PlaybackService extends MediaSessionService {
      */
     private boolean enterOffline(boolean fromExtractor) {
         if (offline) return true;
-        if (player.getCurrentMediaItem() == null) return false;
+        if (backupBlocked || player.getCurrentMediaItem() == null) return false;
         final List<MediaItem> backup = OfflineCache.mediaItems(this);
         if (backup.isEmpty()) return false;
         Collections.shuffle(backup);
@@ -932,9 +962,15 @@ public final class PlaybackService extends MediaSessionService {
     /** Una de la caché no se pudo reproducir (archivo dañado): sale de la caché y suena la siguiente. */
     private void onOfflineError(MediaItem item, PlaybackException error) {
         Log.w(TAG, "No se pudo reproducir " + item.mediaId + " de la caché offline", error);
-        OfflineCache.remove(this, item.mediaId);
+        // Solo si el ARCHIVO está mal se borra la descarga; con otro error (audio, Bluetooth…) solo sale de lo que suena.
+        final boolean badFile = error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                || error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED
+                || error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED;
+        if (badFile) OfflineCache.remove(this, item.mediaId);
         if (player.getMediaItemCount() <= 1) {
-            // No queda ninguna que suene: vuelve la cola y espera a internet como antes (enterOffline ya no tiene caché).
+            // No queda ninguna que suene: vuelve la cola y espera a internet como antes (sin volver a la caché hasta que
+            // vuelva la conexión o elijas otra canción, para no dar vueltas con la misma que falla).
+            backupBlocked = true;
             exitOffline();
             return;
         }
@@ -1016,6 +1052,7 @@ public final class PlaybackService extends MediaSessionService {
             public void onAvailable(Network network) {
                 main.post(() -> {
                     if (instance == null) return;
+                    backupBlocked = false; // hay red otra vez
                     if (offline) {
                         scheduleProbe(PROBE_SOON_MS); // ¿ya hay internet de verdad? Si sí, sigue la cola
                         return;

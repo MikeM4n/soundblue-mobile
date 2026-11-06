@@ -1,9 +1,10 @@
-import { EllipsisVertical, Heart, ListEnd, ListPlus, ListStart, ListX, Play, Radio, Share2, Trash } from 'lucide-react'
+import { CloudDownload, CloudOff, EllipsisVertical, Heart, ListEnd, ListPlus, ListStart, ListX, Play, Radio, Share2, Trash, X } from 'lucide-react'
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { shareTrack } from '../../lib/share'
 import { useLibrary } from '../../library/store'
 import { player } from '../../player/engine'
+import { offlineCache, useDownloadState } from '../../player/offlineCache'
 import { stageBox } from '../../player/stage'
 import type { Track } from '../../player/types'
 import { useNowPlaying } from '../../player/useNowPlaying'
@@ -80,6 +81,7 @@ function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePla
   usePlayer() // para saber al momento si está en la cola
   const liked = favorites.some((t) => t.id === track.id)
   const queued = player.isQueued(track.id)
+  const download = useDownloadState(track.id) // descargarla para escuchar sin conexión (Android)
 
   // Se abre debajo del botón, o encima si no cabe; dentro de la pantalla y nunca sobre el video.
   useLayoutEffect(() => {
@@ -158,6 +160,20 @@ function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePla
       <MenuItem icon={<Heart className={`size-4 ${liked ? 'fill-current' : ''}`} />} onSelect={run(() => toggleFavorite(track))}>
         {liked ? 'Quitar de Tus me gusta' : 'Me gusta'}
       </MenuItem>
+      {offlineCache.enabled &&
+        (download === 'done' ? (
+          <MenuItem icon={<CloudOff className="size-4" />} onSelect={run(() => offlineCache.remove([track.id]))}>
+            Quitar descarga
+          </MenuItem>
+        ) : download === 'pending' ? (
+          <MenuItem icon={<X className="size-4" />} onSelect={run(() => offlineCache.cancel([track.id]))}>
+            Cancelar descarga
+          </MenuItem>
+        ) : (
+          <MenuItem icon={<CloudDownload className="size-4" />} onSelect={run(() => offlineCache.download([track]))}>
+            Descargar
+          </MenuItem>
+        ))}
       <MenuItem icon={<Share2 className="size-4" />} onSelect={run(() => void shareTrack(track))}>
         Compartir
       </MenuItem>

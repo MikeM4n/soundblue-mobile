@@ -2,12 +2,14 @@ import { ChevronLeft, Radio, Shuffle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { SavePlaylistButton } from '../components/library/SavePlaylistButton'
+import { DownloadListButton } from '../components/offline/Downloads'
 import { TrackList } from '../components/tracks/TrackList'
 import { startRadio } from '../components/tracks/trackActions'
 import { Cover } from '../components/ui/Cover'
 import { IconButton } from '../components/ui/IconButton'
 import { PlayButton } from '../components/ui/PlayButton'
 import { YtmShelf } from '../components/ui/YtmShelf'
+import { importPlaylist } from '../data/playlistImport'
 import { ytmPage, type YtmPage as PageData } from '../data/ytmusic'
 import { refreshSaved, savedTracks } from '../library/savedPlaylists'
 import { useLibrary } from '../library/store'
@@ -89,7 +91,7 @@ export function YtmPage() {
               </div>
             </div>
             {data.tracks.length > 0 && (
-              <div className="mt-5 flex items-center gap-3">
+              <div className="mt-5 flex flex-wrap items-center gap-3">
                 <PlayButton label={`Reproducir ${data.title}`} onClick={() => play(data.tracks)} />
                 <IconButton
                   label={`Reproducir ${data.title} en aleatorio`}
@@ -104,13 +106,20 @@ export function YtmPage() {
                   <Radio className="size-6" />
                 </IconButton>
                 {isPlaylist && <SavePlaylistButton playlist={{ id: browseId, title: data.title, subtitle: data.subtitle, image: data.image }} className="size-10" />}
+                {/* Descargar para escuchar sin conexión: de una playlist pública de YouTube, COMPLETA (aquí solo se ven sus primeras 100). */}
+                <DownloadListButton
+                  key={browseId}
+                  tracks={data.tracks}
+                  name={data.title}
+                  load={isPlaylist && !fullTracks ? () => importPlaylist(browseId.replace(/^VL/, '')).then((found) => found.tracks) : undefined}
+                />
               </div>
             )}
           </>
         )}
       </header>
 
-      {data && data.tracks.length > 0 && <TrackList tracks={data.tracks} onPlay={(i) => play(data.tracks, i)} />}
+      {data && data.tracks.length > 0 && <TrackList tracks={data.tracks} onPlay={(i) => play(data.tracks, i)} downloads />}
       {data?.sections.map((section) => (
         <YtmShelf key={section.title} section={section} onPlay={(tracks, i) => play(tracks, i, `${data.title}: ${section.title}`)} />
       ))}

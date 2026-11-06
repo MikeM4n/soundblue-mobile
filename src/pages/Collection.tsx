@@ -2,6 +2,7 @@ import { ChevronLeft, Shuffle } from 'lucide-react'
 import { useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { ImportButton, ImportPlaylistDialog } from '../components/library/ImportPlaylistDialog'
+import { DownloadListButton } from '../components/offline/Downloads'
 import { TrackList } from '../components/tracks/TrackList'
 import type { RemoveAction } from '../components/tracks/trackActions'
 import { Cover } from '../components/ui/Cover'
@@ -70,20 +71,22 @@ export function Collection() {
             <p className="mt-2 text-sm text-texto-sec">{data.note ?? (count === 1 ? '1 canción' : `${count} canciones`)}</p>
           </div>
         </div>
-        <div className="mt-5 flex items-center gap-3">
+        <div className="mt-5 flex flex-wrap items-center gap-3">
           <PlayButton label={`Reproducir ${data.name}`} onClick={() => play()} className={count ? '' : 'pointer-events-none opacity-40'} />
           <IconButton label={`Reproducir ${data.name} en aleatorio`} disabled={!count} onClick={shuffle}>
             <Shuffle className="size-6" />
           </IconButton>
           {/* En «Tus me gusta»: traer las canciones de una playlist de YouTube. */}
           {tipo === 'favoritos' && <ImportButton onClick={() => setImporting(true)} />}
+          {/* Descargar toda la lista para escuchar sin conexión (Android). */}
+          <DownloadListButton tracks={data.tracks} name={data.name} />
         </div>
       </header>
 
       {count === 0 ? (
         <p className="px-6 text-texto-sec">{data.empty ?? 'Todavía no hay canciones. Usa el menú ⋮ de cualquier canción para agregarlas.'}</p>
       ) : (
-        <TrackList tracks={data.tracks} onPlay={play} removeAction={data.removeAction} swipe={data.swipe} />
+        <TrackList tracks={data.tracks} onPlay={play} removeAction={data.removeAction} swipe={data.swipe} downloads />
       )}
       {importing && <ImportPlaylistDialog onClose={() => setImporting(false)} />}
     </div>

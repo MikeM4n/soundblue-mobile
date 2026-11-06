@@ -1,5 +1,17 @@
 # Historial de cambios
 
+## 2026-11-06 — v2.0.0
+
+- Descargas como en Spotify (app de Android):
+  - «Descargar» (nube con flecha) en la cabecera de «Tus me gusta», «Tu Top 50», tus playlists y cualquier playlist o álbum que abras (también las públicas de YouTube: se lee la lista COMPLETA antes de descargar). Mientras descarga muestra «12 de 50» (tocarlo cancela); descargada, ✓ verde (tocarlo pregunta si quitar las descargas).
+  - Cada fila de esas listas muestra su estado: ✓ verde (descargada), flecha girando (en camino) o nube vacía (no descargada). En las demás listas (Buscar, Inicio…) se ve solo el ✓.
+  - Menú ⋮ de cualquier canción: «Descargar», «Cancelar descarga» o «Quitar descarga».
+  - «Importar playlist»: además de «Agregar todas a Me gusta», «Agregar y descargar».
+  - Una descargada suena desde el teléfono, con o sin internet (no gasta datos). Sin internet, la cola salta las que no están descargadas; si ya no queda ninguna por delante, suena el respaldo en bucle hasta que vuelve la conexión.
+- Ajustes → «Modo sin conexión»: slider de 50 a 1000 canciones (antes 15/30/50/100), guardado en localStorage y en el teléfono, que vale para TODAS las descargas. Texto en vivo: «Usando: 45 canciones (150 MB) / Límite: 200 canciones (700 MB)», cuántas son tuyas y cuántas de respaldo. Por defecto 200; los límites de la 1.9.x menores de 50 suben a 50. El respaldo automático de «Selecciones rápidas» guarda hasta 50, solo si caben.
+- Prioridad de borrado: si lo que descargas no cabe, se borran primero las de respaldo (las más viejas) y después las tuyas que menos escuchas (según el historial), nunca las de la misma descarga. Aviso: «Se borraron X canciones antiguas para hacer espacio». Si aun así no cabe, «No cupieron X canciones: sube el límite en Ajustes». Bajar el límite borra igual, con aviso previo en Ajustes.
+- «Descargar solo con Wi-Fi» vale también para las descargas manuales: si toca esperar, quedan en cola (flecha girando) y siguen solas al llegar el Wi-Fi. «Borrar todas las descargas» pide confirmación.
+
 ## 2026-11-06 — v1.9.1
 
 - Modo sin conexión más grande y configurable (Ajustes → «Modo sin conexión»):

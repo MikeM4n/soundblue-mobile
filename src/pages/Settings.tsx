@@ -1,12 +1,14 @@
 import { ChevronRight } from 'lucide-react'
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { GenrePicker } from '../components/tastes/GenrePicker'
 import { Switch } from '../components/ui/Switch'
 import { onboarding } from '../lib/onboarding'
 import { settings, useSettings, type ThemeChoice } from '../lib/settings'
-import { LIMIT_OPTIONS, MB_PER_SONG, offlineCache } from '../player/offlineCache'
+import { MAX_LIMIT, MB_PER_SONG, MIN_LIMIT, offlineCache, useOfflineStatus } from '../player/offlineCache'
 import { showToast } from '../ui/toast'
+
+const LIMIT_COMMIT_MS = 700 // el límite de descargas se aplica al dejar de mover el slider
 
 const THEMES: { key: ThemeChoice; label: string; note: string }[] = [
   { key: 'sistema', label: 'Predeterminado del sistema', note: 'Claro u oscuro, como tu teléfono' },
@@ -63,84 +65,97 @@ export function Settings() {
 }
 
 /**
- * Modo sin conexión (player/offlineCache.ts): cuántas canciones de «Selecciones rápidas» guardar (15, 30, 50 o 100),
- * «Descargar solo con Wi-Fi», cuántas hay y «Limpiar caché offline» para liberar espacio. Solo en la app de Android.
+ * Modo sin conexión (player/offlineCache.ts): el límite global de descargas (de 50 a 1000 canciones, con lo que se usa y
+ * lo que ocupará), «Descargar solo con Wi-Fi», cuántas hay (tuyas y del respaldo) y «Borrar todas las descargas». Solo en
+ * la app de Android.
  */
 function OfflineSection() {
-  const status = useSyncExternalStore(offlineCache.subscribe, offlineCache.get)
+  const status = useOfflineStatus()
   const [clearing, setClearing] = useState(false)
+  const [draft, setDraft] = useState<number | null>(null) // mientras mueves el slider
   useEffect(() => {
     void offlineCache.refresh()
-    // Mientras se ve Ajustes, el número (y el aviso de Wi-Fi) se pone al día.
+    // Mientras se ve Ajustes, los números (y el aviso de Wi-Fi) se ponen al día.
     const timer = window.setInterval(() => void offlineCache.refresh(), 5000)
     return () => window.clearInterval(timer)
   }, [])
-  const megabytes = Math.max(1, Math.round(status.bytes / (1024 * 1024)))
+  // El límite se aplica al dejar de mover el slider (así no se borra nada mientras lo ajustas).
+  useEffect(() => {
+    if (draft === null) return
+    const timer = window.setTimeout(() => {
+      void offlineCache.setLimit(draft).then(() => setDraft(null))
+    }, LIMIT_COMMIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [draft])
+  const limit = draft ?? status.target
+  const over = Math.max(0, status.count - limit)
   const clear = async () => {
+    if (!window.confirm(`¿Borrar las ${status.count} canciones guardadas, también las que descargaste tú?`)) return
     setClearing(true)
     await offlineCache.clear()
     setClearing(false)
-    showToast('Caché offline borrada')
+    showToast('Descargas borradas')
   }
-  const chooseLimit = (limit: number) => {
-    if (limit === status.target) return
-    const removes = Math.max(0, status.count - limit)
-    void offlineCache.setLimit(limit)
-    if (removes) showToast(`Se borraron las ${removes} canciones guardadas más viejas`)
-  }
-  // Lo que pasa ahora: guardando, esperando Wi-Fi o internet, o cuántas hay.
-  const waitingForWifi = offlineCache.waitingForWifi(status)
+  // Lo que pasa ahora: descargando, esperando Wi-Fi o internet.
   const note = status.downloading
-    ? 'Guardando canciones…'
-    : waitingForWifi
+    ? `Descargando…${status.queued ? ` (${status.queued} en cola)` : ''}`
+    : offlineCache.waitingForWifi(status)
       ? 'Esperando conexión Wi-Fi para descargar'
       : status.waiting && !status.online
-        ? 'Sin conexión: se seguirán guardando al volver internet'
+        ? 'Sin conexión: se seguirán descargando al volver internet'
         : null
   return (
     <section aria-labelledby="ajustes-offline" className="rounded-lg bg-tarjeta p-4">
       <h2 id="ajustes-offline" className="text-lg font-bold">Modo sin conexión</h2>
       <p className="mt-1 text-sm text-texto-sec">
-        Si te quedas sin internet, la música no se detiene: suenan, una tras otra, canciones de «Selecciones rápidas» guardadas en el teléfono. Al volver la conexión, sigue tu cola donde iba. Cada una dura al menos 24 horas; después se cambian por nuevas.
+        Descarga listas o canciones (botón «Descargar» de cada lista o menú ⋮) para escucharlas sin internet. Además se guardan solas hasta {status.autoTarget} de «Selecciones rápidas» como respaldo: sin internet, si en tu cola ya no hay descargadas, suenan esas hasta que vuelva la conexión y luego tu cola sigue donde iba.
       </p>
       {offlineCache.enabled ? (
         <>
-          <p id="ajustes-offline-cuantas" className="mt-4 font-semibold">Canciones a guardar</p>
-          <div role="radiogroup" aria-labelledby="ajustes-offline-cuantas" className="mt-2 flex flex-wrap gap-2">
-            {LIMIT_OPTIONS.map((limit) => (
-              <button
-                key={limit}
-                type="button"
-                role="radio"
-                aria-checked={status.target === limit}
-                onClick={() => chooseLimit(limit)}
-                className={`rounded-full px-4 py-1.5 text-sm font-semibold transition-colors ${status.target === limit ? 'bg-contraste text-inverso' : 'bg-contraste/10 text-texto hover:bg-contraste/15'}`}
-              >
-                {limit}
-              </button>
-            ))}
+          <label htmlFor="ajustes-offline-limite" className="mt-4 block font-semibold">
+            Límite de descargas
+          </label>
+          <input
+            id="ajustes-offline-limite"
+            type="range"
+            min={MIN_LIMIT}
+            max={MAX_LIMIT}
+            step={10}
+            value={limit}
+            onChange={(e) => setDraft(Number(e.target.value))}
+            aria-valuetext={`${limit} canciones, unos ${size(limit * MB_PER_SONG)}`}
+            className="mt-3 w-full accent-acento"
+          />
+          <div className="flex justify-between text-xs text-texto-sec" aria-hidden="true">
+            <span>{MIN_LIMIT}</span>
+            <span>{MAX_LIMIT}</span>
           </div>
-          <p className="mt-1 text-sm text-texto-sec">Hasta unos {Math.round(status.target * MB_PER_SONG)} MB en el teléfono.</p>
+          <p className="mt-2 text-sm font-semibold" role="status">
+            Usando: {status.count === 1 ? '1 canción' : `${status.count} canciones`} ({size(status.bytes / (1024 * 1024))}) / Límite: {limit} canciones ({size(limit * MB_PER_SONG)})
+          </p>
+          <p className="text-sm text-texto-sec">
+            {status.manual === 1 ? '1 descargada por ti' : `${status.manual} descargadas por ti`} · {status.auto} de respaldo («Selecciones rápidas»)
+          </p>
+          {over > 0 && (
+            <p className="mt-1 text-sm text-amber-400">
+              Con este límite se borrarán {over === 1 ? '1 canción' : `${over} canciones`}: primero las de respaldo y después las que menos escuchas.
+            </p>
+          )}
           <Switch
             className="mt-4"
             label="Descargar solo con Wi-Fi"
-            note={status.wifiOnly ? 'No gasta tus datos móviles: espera a tener Wi-Fi para guardar o renovar canciones.' : 'También descarga con datos móviles (ideal si tu plan es ilimitado).'}
+            note={status.wifiOnly ? 'No gasta tus datos móviles: espera a tener Wi-Fi para descargar o renovar canciones.' : 'También descarga con datos móviles (ideal si tu plan es ilimitado).'}
             checked={status.wifiOnly}
             onChange={(on) => void offlineCache.setWifiOnly(on)}
           />
-          <p className="mt-4 text-sm font-semibold" role="status">
-            {status.count
-              ? `${status.count === 1 ? '1 canción guardada' : `${status.count} canciones guardadas`} de ${status.target} · ${megabytes} MB`
-              : 'Aún no hay canciones guardadas: se guardan solas al abrir Inicio.'}
-          </p>
-          {note && <p className="text-sm text-texto-sec">{note}</p>}
+          {note && <p className="mt-3 text-sm text-texto-sec">{note}</p>}
           <button
             type="button"
             onClick={() => void clear()}
-            disabled={clearing || (!status.count && !status.downloading)}
+            disabled={clearing || (!status.count && !status.downloading && !status.queued)}
             className="mt-3 rounded-full bg-contraste/10 px-4 py-2 text-sm font-semibold transition-colors hover:bg-contraste/15 disabled:opacity-40"
           >
-            Limpiar caché offline
+            Borrar todas las descargas
           </button>
         </>
       ) : (
@@ -148,6 +163,12 @@ function OfflineSection() {
       )}
     </section>
   )
+}
+
+/** «150 MB», «1,4 GB». */
+function size(megabytes: number): string {
+  if (megabytes >= 1024) return `${(megabytes / 1024).toLocaleString('es-CO', { maximumFractionDigits: 1 })} GB`
+  return `${Math.max(megabytes > 0 ? 1 : 0, Math.round(megabytes))} MB`
 }
 
 function LinkRow({ to, children }: { to: string; children: ReactNode }) {
