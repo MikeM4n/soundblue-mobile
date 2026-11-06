@@ -86,8 +86,8 @@ const CLOCK_MS = 250 // la barra de progreso y la letra se actualizan 4 veces po
 const SPINNER_DELAY_MS = 150 // ▶ sobre una canción ya cargada: si no suena en este tiempo, sale la rueda de carga
 
 const OFFLINE = 'Sin conexión: la música sigue en cuanto vuelva internet.'
-const OFFLINE_SOON = 'Sin conexión: si se corta, suenan tus canciones guardadas hasta que vuelva internet.'
-const OFFLINE_MODE = 'Modo offline: canción guardada en el teléfono. Tu cola sigue al volver internet.'
+const OFFLINE_SOON = 'Sin conexión: suenan tus descargas; las demás esperan a que vuelva internet.'
+const OFFLINE_MODE = 'Modo offline: suena una de tus descargas. Tu cola sigue al volver internet.'
 const SKIPPED = 'No se pudo reproducir esta canción, pasando a la siguiente'
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
@@ -1126,8 +1126,8 @@ export class PlayerEngine {
   }
 
   /**
-   * Modo offline del reproductor nativo (PlaybackService): sin internet suenan, una tras otra, las canciones guardadas de
-   * «Selecciones rápidas» y la cola espera en la canción y el segundo donde iba. «Sonando ahora» muestra la de la caché.
+   * Modo offline del reproductor nativo (PlaybackService): sin internet y sin descargadas por delante en la cola, suenan
+   * una tras otra tus descargas y la cola espera en la canción y el segundo donde iba. «Sonando ahora» muestra la de la caché.
    * Al volver la conexión el nativo vuelve solo a la cola (`info` = null): se le manda otra vez (pudo cambiar) y la radio
    * repone lo que falte.
    */
@@ -1138,7 +1138,7 @@ export class PlayerEngine {
         this.resumeWhenOnline = false
         this.error = null
         if (this.status !== 'idle' && this.status !== 'standby') this.status = 'paused'
-        showToast('Sin internet: suenan tus canciones guardadas hasta que vuelva la conexión')
+        showToast('Sin internet: suenan tus descargas hasta que vuelva la conexión')
       }
       if (this.offline?.track.id !== info.track.id) listening.started(info.track) // también cuenta para no repetirla en 24 h
       this.offline = info

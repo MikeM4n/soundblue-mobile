@@ -1,10 +1,11 @@
-// Descargas para escuchar sin conexión (solo en la app de Android), como en Spotify:
-//  - «Descargar» en una lista (Tus me gusta, tus playlists, cualquier playlist o álbum) o en el menú ⋮ de una canción.
-//  - Respaldo automático: hasta 50 de «Selecciones rápidas», si caben (se renuevan cada 24 h).
+// Descargas para escuchar sin conexión (solo en la app de Android), como en Spotify. Solo lo que TÚ descargas:
+// «Descargar» en una lista (Tus me gusta, tus playlists, cualquier playlist o álbum) o en el menú ⋮ de una canción.
+// Cola real: de a UNA canción, en el orden en que las pediste (una lista entera antes que la siguiente). Cada canción está
+// descargada, descargándose (solo una a la vez), en cola (esperando su turno) o sin descargar.
 // Una descargada suena desde el teléfono, con o sin internet. Sin internet, la cola salta las que no están descargadas y,
-// si no queda ninguna, suenan todas en bucle hasta que vuelve la conexión (PlaybackService).
+// si no queda ninguna, suenan tus descargas en bucle hasta que vuelve la conexión (PlaybackService).
 // Límite global (Ajustes): de 50 a 1000 canciones, guardado aquí (localStorage) y en el teléfono. Si lo que pides no cabe,
-// se borran primero las del respaldo y después las tuyas que menos escuchas (según tu historial). Las reglas están en
+// se borran las que menos escuchas (según tu historial). Las reglas están en
 // android/app/src/main/java/com/soundblue/mobile/OfflineCache.java.
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { useSyncExternalStore } from 'react'
@@ -13,40 +14,36 @@ import { showToast } from '../ui/toast'
 import { sizedArtwork, thumbnail, type Track } from './types'
 
 export interface OfflineStatus {
-  count: number // canciones guardadas (tuyas y del respaldo)
-  manual: number // las que descargaste tú
-  auto: number // las del respaldo automático
+  count: number // canciones descargadas
   bytes: number // lo que ocupan
   target: number // el límite global (MIN_LIMIT a MAX_LIMIT)
-  autoTarget: number // cuántas guarda el respaldo como mucho
-  stale: number // del respaldo, cuántas tienen más de 24 h (se renuevan)
-  queued: number // tuyas en cola
+  queued: number // en cola, esperando su turno (sin contar la que se descarga)
+  downloading: boolean // hay una descargándose ahora
   online: boolean // hay internet
   wifi: boolean // la red es Wi-Fi (sin límite de datos)
   wifiOnly: boolean // «Descargar solo con Wi-Fi» (encendido por defecto)
-  waiting: boolean // hay pendientes esperando red (siguen solas al llegar)
-  downloading: boolean
+  waiting: boolean // la cola está en pausa esperando red (sigue sola al llegar)
   oldest: number
   newest: number
 }
 
-/** Una canción: descargada, en camino (en cola o descargándose) o no descargada. */
-export type DownloadState = 'done' | 'pending' | 'none'
+/** Una canción: descargada, descargándose ahora, en cola (esperando su turno) o sin descargar. */
+export type DownloadState = 'done' | 'downloading' | 'queued' | 'none'
 
 type NativeTrack = { id: string; title: string; artist: string; album: string; artwork: string }
 type Plays = Record<string, [number, number]> // id → [veces escuchada, última vez]
+type TrackEvent = { id: string; state: 'queued' | 'downloading' | 'done' | 'failed' | 'removed' }
 
 interface OfflineCachePlugin {
-  offer(options: { tracks: NativeTrack[] }): Promise<void>
   download(options: { tracks: NativeTrack[]; plays: Plays }): Promise<void>
   cancel(options: { ids: string[] }): Promise<void>
   remove(options: { ids: string[] }): Promise<OfflineStatus>
   status(): Promise<OfflineStatus>
-  list(): Promise<{ downloaded: string[]; manual: string[]; pending: string[] }>
+  list(): Promise<{ downloaded: string[]; queued: string[]; current?: string }>
   setLimit(options: { limit: number; plays: Plays }): Promise<OfflineStatus>
   setWifiOnly(options: { enabled: boolean }): Promise<OfflineStatus>
   clear(): Promise<OfflineStatus>
-  addListener(event: 'track', listener: (event: { id: string; state: 'queued' | 'downloading' | 'done' | 'failed' | 'removed' }) => void): Promise<unknown>
+  addListener(event: 'track', listener: (event: TrackEvent) => void): Promise<unknown>
   addListener(event: 'evicted', listener: (event: { count: number }) => void): Promise<unknown>
   addListener(event: 'full', listener: (event: { skipped: number }) => void): Promise<unknown>
 }
@@ -59,24 +56,19 @@ export const DEFAULT_LIMIT = 200
 /** Lo que ocupa una canción descargada, más o menos (audio de unos 130 kbps): para mostrar el espacio en Ajustes. */
 export const MB_PER_SONG = 3.5
 const LIMIT_KEY = 'soundblue:offline-limite'
-const OFFER_DELAY_MS = 8000 // el respaldo espera a que Inicio termine de cargar antes de empezar a descargar
 const NOTICE_MS = 1500 // los avisos de varias canciones se juntan en uno
 
 const enabled = Capacitor.getPlatform() === 'android'
 const EMPTY: OfflineStatus = {
   count: 0,
-  manual: 0,
-  auto: 0,
   bytes: 0,
   target: DEFAULT_LIMIT,
-  autoTarget: 50,
-  stale: 0,
   queued: 0,
+  downloading: false,
   online: false,
   wifi: false,
   wifiOnly: true,
   waiting: false,
-  downloading: false,
   oldest: 0,
   newest: 0,
 }
@@ -102,10 +94,9 @@ function writeLimit(limit: number) {
 
 let status: OfflineStatus = { ...EMPTY, target: readLimit() ?? DEFAULT_LIMIT }
 const downloaded = new Set<string>()
-const pending = new Set<string>()
+const queued = new Set<string>() // esperan su turno
+let current: string | null = null // la que se descarga ahora (una sola)
 const listeners = new Set<() => void>()
-let offered = new Map<string, Track>()
-let offerTimer: number | undefined
 let statusTimer: number | undefined
 
 function emit() {
@@ -153,19 +144,26 @@ const noteFull = collector((n) =>
 )
 const noteFailed = collector((n) => showToast(`${n === 1 ? '1 canción no se pudo' : `${n} canciones no se pudieron`} descargar`))
 
+/** Sale de la cola y de «descargando». */
+function forget(id: string) {
+  queued.delete(id)
+  if (current === id) current = null
+}
+
 async function load() {
   // La foto de lo descargado se aplica en cuanto llega (si esperara a otra consulta, un aviso «lista» que llegara en medio
   // quedaría pisado y la canción seguiría girando).
   const list = await OfflineCache.list().catch(() => null)
   if (list) {
     downloaded.clear()
-    pending.clear()
+    queued.clear()
     list.downloaded.forEach((id) => downloaded.add(id))
-    list.pending.forEach((id) => pending.add(id))
+    list.queued.forEach((id) => queued.add(id))
+    current = list.current ?? null
     emit()
   }
   await offlineCache.refresh()
-  // El límite vive aquí (localStorage) y en el teléfono. La primera vez se toma el del teléfono (el de la 1.9.x sube a 50).
+  // El límite vive aquí (localStorage) y en el teléfono. La primera vez se toma el del teléfono.
   const saved = readLimit()
   if (saved === null) writeLimit(status.target)
   else if (saved !== status.target) await offlineCache.setLimit(saved)
@@ -174,11 +172,13 @@ async function load() {
 export const offlineCache = {
   enabled,
 
-  /** Lo último que se supo del teléfono (cuántas, límite, red…). */
+  /** Lo último que se supo del teléfono (cuántas, límite, cola, red…). */
   get: () => status,
 
   stateOf(id: string): DownloadState {
-    return downloaded.has(id) ? 'done' : pending.has(id) ? 'pending' : 'none'
+    if (downloaded.has(id)) return 'done'
+    if (current === id) return 'downloading'
+    return queued.has(id) ? 'queued' : 'none'
   },
 
   subscribe(listener: () => void) {
@@ -196,43 +196,45 @@ export const offlineCache = {
   },
 
   /**
-   * «Descargar»: las que faltan van a la cola, en orden (las que ya están en camino no se repiten). Devuelve cuántas
-   * se pidieron. Si toca esperar el Wi-Fi o internet, avisa.
+   * «Descargar»: las que faltan van al FINAL de la cola, en orden (esperan a que termine lo que pediste antes). Las que
+   * ya están descargadas o en la cola no se repiten. Devuelve cuántas entraron. Si toca esperar el Wi-Fi o internet, avisa.
    */
   download(tracks: readonly Track[]): number {
     if (!enabled) return 0
     const seen = new Set<string>()
-    const wanted = tracks.filter((track) => !seen.has(track.id) && !!seen.add(track.id) && !pending.has(track.id))
+    const wanted = tracks.filter((track) => {
+      const fresh = !seen.has(track.id) && offlineCache.stateOf(track.id) === 'none'
+      seen.add(track.id)
+      return fresh
+    })
     if (!wanted.length) return 0
-    const fresh = wanted.filter((track) => !downloaded.has(track.id)).length
-    for (const track of wanted) if (!downloaded.has(track.id)) pending.add(track.id)
+    const busy = current !== null || queued.size > 0 // ya había otra descarga: estas esperan su turno
+    wanted.forEach((track) => queued.add(track.id))
     emit()
-    // Las ya descargadas también van: si eran del respaldo, pasan a ser tuyas (no se renuevan ni se borran primero).
     void OfflineCache.download({ tracks: wanted.map(nativeTrack), plays: plays() }).catch(() => {})
-    if (fresh) {
-      if (!status.online) showToast('Sin conexión: se descargarán cuando vuelva internet')
-      else if (status.wifiOnly && !status.wifi) showToast('Esperando conexión Wi-Fi para descargar (o desactiva «Descargar solo con Wi-Fi» en Ajustes)', undefined, 4500)
-      else showToast(fresh === 1 ? 'Descargando 1 canción' : `Descargando ${fresh} canciones`)
-    }
+    const count = wanted.length === 1 ? '1 canción' : `${wanted.length} canciones`
+    if (!status.online) showToast(`${count} en cola: se descargarán cuando vuelva internet`)
+    else if (status.wifiOnly && !status.wifi) showToast(`${count} en cola: esperando conexión Wi-Fi (o desactiva «Descargar solo con Wi-Fi» en Ajustes)`, undefined, 4500)
+    else showToast(busy ? `${count} en cola: se descargan cuando termine lo anterior` : `Descargando ${count}`)
     refreshSoon()
-    return fresh
+    return wanted.length
   },
 
-  /** Cancela las que estaban en camino. */
+  /** Cancela las que estaban en la cola (y la que se descarga, si es una de ellas). */
   cancel(ids: readonly string[]) {
     if (!enabled || !ids.length) return
-    ids.forEach((id) => pending.delete(id))
+    ids.forEach(forget)
     emit()
     void OfflineCache.cancel({ ids: [...ids] }).catch(() => {})
     refreshSoon()
   },
 
-  /** «Quitar descarga»: de una canción o de una lista (también cancela las que estaban en camino). */
+  /** «Quitar descarga»: de una canción o de una lista (también cancela las que estaban en la cola). */
   remove(ids: readonly string[]) {
     if (!enabled || !ids.length) return
     ids.forEach((id) => {
       downloaded.delete(id)
-      pending.delete(id)
+      forget(id)
     })
     emit()
     void OfflineCache.remove({ ids: [...ids] })
@@ -243,29 +245,8 @@ export const offlineCache = {
       .catch(() => {})
   },
 
-  /** El respaldo automático: canciones de «Selecciones rápidas» (se guardan las que falten, si caben). */
-  offer(tracks: readonly Track[]) {
-    if (!enabled || !tracks.length) return
-    for (const track of tracks) if (!offered.has(track.id)) offered.set(track.id, track)
-    window.clearTimeout(offerTimer)
-    offerTimer = window.setTimeout(() => {
-      const batch = [...offered.values()]
-      offered = new Map()
-      void OfflineCache.offer({ tracks: batch.map(nativeTrack) })
-        .then(refreshSoon)
-        .catch(() => {})
-    }, OFFER_DELAY_MS)
-  },
-
-  /** ¿Al respaldo le faltan canciones (si caben) o hay de más de 24 h para renovar? */
-  needsMore: (s: OfflineStatus) => enabled && ((s.auto < s.autoTarget && s.count < s.target) || s.stale > 0),
-
-  /** ¿Se puede descargar ahora? Con internet y, si es «solo con Wi-Fi», en Wi-Fi. */
-  canDownload: (s: OfflineStatus) => s.online && (s.wifi || !s.wifiOnly),
-
-  /** Hay algo por descargar pero toca esperar el Wi-Fi («Descargar solo con Wi-Fi» y con datos móviles). */
-  waitingForWifi: (s: OfflineStatus) =>
-    enabled && s.online && s.wifiOnly && !s.wifi && (s.waiting || s.queued > 0 || (s.auto < s.autoTarget && s.count < s.target)),
+  /** Hay descargas pendientes pero toca esperar el Wi-Fi («Descargar solo con Wi-Fi» y con datos móviles). */
+  waitingForWifi: (s: OfflineStatus) => enabled && s.online && s.wifiOnly && !s.wifi && (s.waiting || s.queued > 0 || s.downloading),
 
   /** El límite global (Ajustes): se guarda aquí y en el teléfono. Si es menor que las que hay, se borran al momento. */
   async setLimit(limit: number): Promise<OfflineStatus> {
@@ -289,13 +270,12 @@ export const offlineCache = {
     return status
   },
 
-  /** «Borrar todas las descargas» (Ajustes): las tuyas y las del respaldo. */
+  /** «Borrar todas las descargas» (Ajustes), también la cola. */
   async clear(): Promise<OfflineStatus> {
     if (!enabled) return status
-    offered = new Map()
-    window.clearTimeout(offerTimer)
     downloaded.clear()
-    pending.clear()
+    queued.clear()
+    current = null
     emit()
     status = await OfflineCache.clear().catch(() => ({ ...EMPTY, target: status.target, wifiOnly: status.wifiOnly }))
     emit()
@@ -308,23 +288,25 @@ export function useDownloadState(id: string): DownloadState {
   return useSyncExternalStore(offlineCache.subscribe, () => offlineCache.stateOf(id))
 }
 
-/** De una lista: cuántas están descargadas y cuántas en camino. */
-export function useListDownload(tracks: readonly Track[]): { done: number; pending: number; total: number } {
+/** De una lista: cuántas están descargadas, si una se está descargando ahora y cuántas esperan en la cola. */
+export function useListDownload(tracks: readonly Track[]): { done: number; downloading: boolean; queued: number; total: number } {
   const summary = useSyncExternalStore(offlineCache.subscribe, () => {
     let done = 0
-    let inFlight = 0
+    let active = 0
+    let waiting = 0
     for (const track of tracks) {
       const state = offlineCache.stateOf(track.id)
       if (state === 'done') done++
-      else if (state === 'pending') inFlight++
+      else if (state === 'downloading') active++
+      else if (state === 'queued') waiting++
     }
-    return `${done}|${inFlight}`
+    return `${done}|${active}|${waiting}`
   })
-  const [done, inFlight] = summary.split('|').map(Number)
-  return { done, pending: inFlight, total: tracks.length }
+  const [done, active, waiting] = summary.split('|').map(Number)
+  return { done, downloading: active > 0, queued: waiting, total: tracks.length }
 }
 
-/** Estado del teléfono (cuántas, límite, red…) para Ajustes. */
+/** Estado del teléfono (cuántas, límite, cola, red…) para Ajustes. */
 export function useOfflineStatus(): OfflineStatus {
   return useSyncExternalStore(offlineCache.subscribe, offlineCache.get)
 }
@@ -332,14 +314,18 @@ export function useOfflineStatus(): OfflineStatus {
 if (enabled) {
   void OfflineCache.addListener('track', ({ id, state }) => {
     if (state === 'done') {
+      forget(id)
       downloaded.add(id)
-      pending.delete(id)
-    } else if (state === 'queued' || state === 'downloading') {
-      pending.add(id)
+    } else if (state === 'downloading') {
+      queued.delete(id)
+      current = id
+    } else if (state === 'queued') {
+      if (current === id) current = null // se pausó (sin red): vuelve a esperar su turno
+      queued.add(id)
     } else {
       if (state === 'failed') noteFailed(1)
+      forget(id)
       downloaded.delete(id)
-      pending.delete(id)
     }
     emit()
     refreshSoon()

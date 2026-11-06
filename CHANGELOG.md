@@ -1,5 +1,10 @@
 # Historial de cambios
 
+## 2026-11-06 — v2.0.1
+
+- Descargas 100 % manuales: ya no se descargan solas canciones de «Selecciones rápidas» como respaldo. Solo se guarda lo que tú descargas (listas, «Tus me gusta» o canciones sueltas). Lo que quedaba del respaldo automático de la 1.9/2.0.0 se borra al abrir la app. Sin internet, si en tu cola no quedan descargadas, suenan tus descargas en bucle hasta que vuelve la conexión.
+- Cola de descargas real: se descarga de a una canción, en el orden en que lo pediste (la lista A completa, luego la B, luego la C). Solo la que se está bajando muestra la flecha girando; las que esperan su turno muestran un reloj («En cola»). El botón de cada lista dice «12 de 50» si se está descargando, «En cola» (o «Esperando Wi-Fi») si espera, y tocarlo la quita de la cola. En el menú ⋮: «Cancelar descarga» o «Quitar de la cola de descargas». Ajustes muestra «Descargando 1 canción · N en cola».
+
 ## 2026-11-06 — v2.0.0
 
 - Descargas como en Spotify (app de Android):

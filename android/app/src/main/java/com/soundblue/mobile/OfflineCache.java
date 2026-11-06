@@ -41,14 +41,15 @@ import java.util.concurrent.Executors;
 
 /**
  * Descargas para escuchar sin conexión: el AUDIO guardado en el teléfono (files/offline) y su lista (SharedPreferences).
- * Hay dos clases:
- *  - Las que descargas tú («Descargar» en una lista o en el menú ⋮ de una canción): quedan hasta que las quites.
- *  - El respaldo automático: hasta 50 de «Selecciones rápidas», si caben; las de más de 24 h se renuevan.
+ * Solo lo que descargas tú («Descargar» en una lista o en el menú ⋮ de una canción); quedan hasta que las quites. (El
+ * respaldo automático de «Selecciones rápidas» de la 1.9 y la 2.0.0 ya no existe: lo que quede de él se borra al cargar.)
+ * Cola real: de a UNA canción, en el orden en que las pediste (una lista entera antes que la siguiente). La que se baja
+ * avisa «downloading»; las demás, «queued» (esperan su turno).
  * Una descargada suena desde el teléfono (PlaybackService.resolve), con o sin internet. Sin internet, PlaybackService salta
- * las que no están descargadas y, si ya no queda ninguna por delante, pone todas en bucle (modo offline).
+ * las que no están descargadas y, si ya no queda ninguna por delante, pone tus descargas en bucle (modo offline).
  * Límite global (Ajustes, guardado también en la app): de 50 a 1000 canciones, 200 por defecto. Si lo que pides no cabe,
- * se borran primero las del respaldo (las más viejas) y después las tuyas que menos escuchas (y las más viejas), según el
- * historial de la app; nunca las de la misma descarga. Si aun así no cabe, lo que falta no se descarga (onFull).
+ * se borran las que menos escuchas (y las más viejas), según el historial de la app; nunca las de la misma descarga. Si
+ * aun así no cabe, lo que falta no se descarga (onFull).
  * «Descargar solo con Wi-Fi» (encendido por defecto): solo se descarga en una red sin límite de datos; si toca esperar,
  * lo pendiente sigue solo al llegar la red (resume, desde OfflineCachePlugin).
  */
@@ -63,8 +64,6 @@ final class OfflineCache {
     static final int MIN_LIMIT = 50;
     static final int MAX_LIMIT = 1000;
     static final int DEFAULT_LIMIT = 200;
-    static final int AUTO_TARGET = 50; // respaldo automático de «Selecciones rápidas», si cabe
-    static final long KEEP_MS = 24 * 60 * 60 * 1000L;
     private static final long MAX_BYTES = 25L * 1024 * 1024; // por canción: nada de mezclas de una hora
     private static final long MAX_SONG_S = 10 * 60;
     private static final int CHUNK = 1024 * 1024; // de a 1 MB, como pide ExoPlayer (así YouTube no frena la descarga)
@@ -85,7 +84,7 @@ final class OfflineCache {
         void onFull(int skipped);
     }
 
-    /** Una canción guardada. `manual`: la descargaste tú (si no, es del respaldo automático). */
+    /** Una canción descargada. `manual`: siempre true desde la 2.0.1 (false era el respaldo automático, que se borra). */
     static final class Entry {
         final String id;
         final String title;
@@ -121,16 +120,12 @@ final class OfflineCache {
         }
     }
 
-    /** Lo siguiente que toca descargar: una tuya o una del respaldo (que, si `replace`, ocupa el lugar de esa vieja). */
+    /** La siguiente de la cola. */
     private static final class Job {
         final JSONObject track;
-        final boolean manual;
-        @Nullable final String replace;
 
-        Job(JSONObject track, boolean manual, @Nullable String replace) {
+        Job(JSONObject track) {
             this.track = track;
-            this.manual = manual;
-            this.replace = replace;
         }
 
         String id() {
@@ -142,14 +137,12 @@ final class OfflineCache {
     private static Context app;
     private static LinkedHashMap<String, Entry> index; // las guardadas, de la más vieja a la más nueva
     private static final LinkedHashMap<String, JSONObject> manualQueue = new LinkedHashMap<>(); // las que pediste, en orden
-    private static List<JSONObject> autoOffer = new ArrayList<>(); // las últimas «Selecciones rápidas» ofrecidas
     private static final Map<String, long[]> plays = new HashMap<>(); // id → {veces escuchada, última vez}: de la app
     private static final Set<String> batch = new HashSet<>(); // las de tus descargas en curso: no se borran para hacer espacio
     private static boolean scheduled; // hay una tanda de descargas en marcha (o encargada)
     private static boolean waiting; // hay pendientes esperando red (Wi-Fi o internet)
-    private static volatile String current; // la tuya que se está descargando
+    private static volatile String current; // la que se está descargando (las demás de la cola esperan)
     private static volatile boolean cancelCurrent;
-    private static volatile boolean autoBusy; // descargando una del respaldo
     private static boolean networkFailure; // la última fetch falló por la red (solo el hilo de descargas)
     private static String retryId; // la que falló por un corte de red…
     private static int retryCount; // …y cuántas veces seguidas
@@ -186,16 +179,25 @@ final class OfflineCache {
         if (index != null) return index;
         index = new LinkedHashMap<>();
         final File dir = dir();
+        int dropped = 0;
         try {
             final JSONArray saved = new JSONArray(prefs().getString(KEY, "[]"));
             for (int i = 0; i < saved.length(); i++) {
                 final JSONObject json = saved.optJSONObject(i);
                 if (json == null) continue;
                 final Entry entry = Entry.fromJson(json);
+                if (!entry.manual) {
+                    dropped++; // del respaldo automático de antes: se borra
+                    continue;
+                }
                 if (StreamResolver.VIDEO_ID.matcher(entry.id).matches() && new File(dir, entry.file).isFile()) index.put(entry.id, entry);
             }
         } catch (JSONException error) {
             Log.w(TAG, "La lista de descargas está dañada", error);
+        }
+        if (dropped > 0) {
+            Log.i(TAG, "Se borraron " + dropped + " canciones del respaldo automático de antes");
+            write();
         }
         // Archivos sin anotar (la app se cerró a mitad de una descarga, o antes de guardar la lista): ocupan espacio y nadie
         // los usa. Solo al cargar, cuando todavía no hay ninguna descarga en curso.
@@ -250,69 +252,52 @@ final class OfflineCache {
         return items;
     }
 
-    /** Cuántas hay (tuyas y del respaldo), cuánto ocupan, el límite, la red y si está descargando (para Ajustes). */
+    /** Cuántas hay, cuánto ocupan, el límite, la cola, la red y si está descargando (para Ajustes). */
     static JSObject status(Context context) {
         init(context);
         final JSObject status = new JSObject();
         synchronized (LOCK) {
-            final long staleBefore = System.currentTimeMillis() - KEEP_MS;
             long bytes = 0;
             long oldest = 0;
             long newest = 0;
-            int manual = 0;
-            int stale = 0;
             for (final Entry entry : index().values()) {
                 bytes += entry.size;
                 if (oldest == 0 || entry.savedAt < oldest) oldest = entry.savedAt;
                 newest = Math.max(newest, entry.savedAt);
-                if (entry.manual) manual++;
-                else if (entry.savedAt < staleBefore) stale++;
             }
             status.put("count", index().size());
-            status.put("manual", manual);
-            status.put("auto", index().size() - manual);
             status.put("bytes", bytes);
-            status.put("stale", stale);
             status.put("oldest", oldest);
             status.put("newest", newest);
-            status.put("queued", manualQueue.size());
+            // En cola: las que esperan su turno (sin contar la que se está descargando).
+            status.put("queued", manualQueue.size() - (current != null && manualQueue.containsKey(current) ? 1 : 0));
             status.put("waiting", waiting);
+            status.put("downloading", current != null);
         }
         final boolean online = isOnline();
         status.put("target", limit());
-        status.put("autoTarget", AUTO_TARGET);
         status.put("online", online);
         status.put("wifi", online && !isMetered());
         status.put("wifiOnly", wifiOnly());
-        status.put("downloading", current != null || autoBusy);
         return status;
     }
 
-    /** Qué hay: las descargadas (todas y las tuyas) y las pendientes (en cola o descargándose). */
+    /** Qué hay: las descargadas, la que se está descargando (`current`) y las que esperan su turno (`queued`). */
     static JSObject list(Context context) {
         init(context);
         final JSArray downloaded = new JSArray();
-        final JSArray manual = new JSArray();
-        final JSArray pending = new JSArray();
+        final JSArray queued = new JSArray();
+        final String now;
         synchronized (LOCK) {
-            for (final Entry entry : index().values()) {
-                downloaded.put(entry.id);
-                if (entry.manual) manual.put(entry.id);
-            }
-            for (final String id : manualQueue.keySet()) pending.put(id);
+            now = current;
+            for (final Entry entry : index().values()) downloaded.put(entry.id);
+            for (final String id : manualQueue.keySet()) if (!id.equals(now)) queued.put(id);
         }
-        final String now = current;
-        if (now != null && !contains(pending, now)) pending.put(now);
         final JSObject result = new JSObject();
         result.put("downloaded", downloaded);
-        result.put("manual", manual);
-        result.put("pending", pending);
+        result.put("queued", queued);
+        if (now != null) result.put("current", now);
         return result;
-    }
-
-    private static boolean contains(JSArray array, String value) {
-        for (int i = 0; i < array.length(); i++) if (value.equals(array.optString(i))) return true;
-        return false;
     }
 
     // ---- Ajustes ----
@@ -323,7 +308,7 @@ final class OfflineCache {
         return Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, saved));
     }
 
-    /** Cambia el límite. Si hay más de las que caben, se borran al momento (primero el respaldo; ver pickVictim). */
+    /** Cambia el límite. Si hay más de las que caben, se borran al momento (las que menos escuchas; ver pickVictim). */
     static void setLimit(Context context, int value) {
         init(context);
         final int limit = Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, value));
@@ -363,35 +348,20 @@ final class OfflineCache {
 
     // ---- Pedidos ----
 
-    /** «Selecciones rápidas» de Inicio: el respaldo automático guarda las que falten (si caben). */
-    static void offer(Context context, List<JSONObject> tracks) {
-        init(context);
-        synchronized (LOCK) {
-            autoOffer = new ArrayList<>(tracks);
-        }
-        schedule();
-    }
-
     /**
-     * «Descargar» (una lista o una canción): van a la cola, en orden. Las que ya estaban en el respaldo pasan a ser tuyas
-     * sin volver a descargarse.
+     * «Descargar» (una lista o una canción): van al final de la cola, en orden (esperan a que termine lo que pediste antes).
+     * Las que ya están descargadas no se repiten.
      */
     static void download(Context context, List<JSONObject> tracks) {
         init(context);
         final List<String> queued = new ArrayList<>();
         final List<String> pinned = new ArrayList<>();
         synchronized (LOCK) {
-            boolean changed = false;
             for (final JSONObject track : tracks) {
                 final String id = track.optString("id");
                 if (!StreamResolver.VIDEO_ID.matcher(id).matches()) continue;
                 batch.add(id);
-                final Entry entry = index().get(id);
-                if (entry != null) {
-                    if (!entry.manual) {
-                        entry.manual = true;
-                        changed = true;
-                    }
+                if (index().containsKey(id)) {
                     pinned.add(id);
                 } else if (!manualQueue.containsKey(id) && (!id.equals(current) || cancelCurrent)) {
                     // (La que se está cancelando ahora mismo vuelve a la cola: la pediste otra vez.)
@@ -399,7 +369,6 @@ final class OfflineCache {
                     queued.add(id);
                 }
             }
-            if (changed) write();
         }
         for (final String id : pinned) notifyTrack(id, "done");
         for (final String id : queued) notifyTrack(id, "queued");
@@ -419,7 +388,7 @@ final class OfflineCache {
         for (final String id : removed) notifyTrack(id, "removed");
     }
 
-    /** «Quitar descarga»: borra las canciones (tuyas o del respaldo) y cancela las que estaban pendientes. */
+    /** «Quitar descarga»: borra las canciones y cancela las que estaban en la cola. */
     static void remove(Context context, List<String> ids) {
         init(context);
         cancel(ids);
@@ -446,7 +415,6 @@ final class OfflineCache {
             removed.addAll(manualQueue.keySet());
             manualQueue.clear();
             batch.clear();
-            autoOffer = new ArrayList<>();
             waiting = false;
             index().clear();
             final File[] files = dir().listFiles();
@@ -494,7 +462,7 @@ final class OfflineCache {
             while (true) {
                 final Job job;
                 synchronized (LOCK) {
-                    final boolean work = !manualQueue.isEmpty() || !autoOffer.isEmpty();
+                    final boolean work = !manualQueue.isEmpty();
                     if (work && !canDownload()) { // se pausa aquí y sigue al llegar la red (resume)
                         scheduled = false;
                         waiting = true;
@@ -508,18 +476,13 @@ final class OfflineCache {
                         return;
                     }
                 }
-                if (job.manual) {
-                    final int[] result = downloadManual(job);
-                    if (result == null) { // se cayó la red: queda en la cola y sigue al volver (resume)
-                        pause();
-                        return;
-                    }
-                    evicted += result[0];
-                    skipped += result[1];
-                } else if (!downloadAuto(job)) {
+                final int[] result = downloadManual(job);
+                if (result == null) { // se cayó la red: queda en la cola y sigue al volver (resume)
                     pause();
                     return;
                 }
+                evicted += result[0];
+                skipped += result[1];
             }
         } finally {
             notifyEvicted(evicted);
@@ -540,32 +503,11 @@ final class OfflineCache {
         if (canDownload()) new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> resume(app), RETRY_MS);
     }
 
-    /** La siguiente: primero las que pediste; después el respaldo, si le falta o hay que renovar una vieja. Con LOCK. */
+    /** La siguiente de la cola (la más antigua que pediste). Con LOCK. */
     @Nullable
     private static Job nextJob() {
-        final Iterator<JSONObject> manual = manualQueue.values().iterator();
-        if (manual.hasNext()) return new Job(manual.next(), true, null);
-        final int limit = limit();
-        int auto = 0;
-        Entry stale = null;
-        final long staleBefore = System.currentTimeMillis() - KEEP_MS;
-        for (final Entry entry : index().values()) {
-            if (entry.manual) continue;
-            auto++;
-            if (entry.savedAt < staleBefore && (stale == null || entry.savedAt < stale.savedAt)) stale = entry;
-        }
-        final boolean room = auto < AUTO_TARGET && index().size() < limit;
-        if (!room && stale == null) {
-            autoOffer = new ArrayList<>();
-            return null;
-        }
-        while (!autoOffer.isEmpty()) {
-            final JSONObject track = autoOffer.remove(0);
-            final String id = track.optString("id");
-            if (!StreamResolver.VIDEO_ID.matcher(id).matches() || index().containsKey(id)) continue;
-            return new Job(track, false, room ? null : stale.id);
-        }
-        return null;
+        final Iterator<JSONObject> queue = manualQueue.values().iterator();
+        return queue.hasNext() ? new Job(queue.next()) : null;
     }
 
     /**
@@ -577,14 +519,9 @@ final class OfflineCache {
         final String id = job.id();
         synchronized (LOCK) {
             if (!manualQueue.containsKey(id)) return new int[] {0, 0}; // la cancelaste justo ahora
-            // Ya está guardada (p. ej. el respaldo la estaba bajando cuando la pediste): pasa a ser tuya, sin bajarla otra vez.
-            final Entry saved = index().get(id);
-            if (saved != null) {
+            // Ya está descargada (la pediste en dos listas): no se baja otra vez.
+            if (index().containsKey(id)) {
                 manualQueue.remove(id);
-                if (!saved.manual) {
-                    saved.manual = true;
-                    write();
-                }
                 notifyTrack(id, "done");
                 return new int[] {0, 0};
             }
@@ -638,57 +575,18 @@ final class OfflineCache {
         return new int[] {evicted, 0};
     }
 
-    /** Una del respaldo automático (si toca, en el lugar de una de más de 24 h). False si se cayó la red (se reintenta). */
-    private static boolean downloadAuto(Job job) {
-        autoBusy = true;
-        final File file;
-        try {
-            file = fetch(job.track);
-        } finally {
-            autoBusy = false;
-        }
-        if (file == null) {
-            if (!networkFailure || canDownload()) return true; // falló ella (o un corte suelto): sigue con la siguiente
-            synchronized (LOCK) {
-                autoOffer.add(0, job.track); // se intenta otra vez al volver la red
-            }
-            return false;
-        }
-        synchronized (LOCK) {
-            if (job.replace != null) {
-                final Entry old = index().get(job.replace);
-                if (old != null && !old.manual) removeEntry(old);
-            }
-            // Si mientras tanto tus descargas llenaron el límite (o ya la descargaste tú), el respaldo cede su lugar.
-            if (index().containsKey(job.id()) || index().size() >= limit() || !commit(job.track, file, false)) {
-                if (file.exists() && !file.delete()) Log.w(TAG, "No se pudo borrar " + file);
-                write();
-                return true;
-            }
-            write();
-        }
-        notifyTrack(job.id(), "done");
-        return true;
-    }
-
     /**
-     * Cuál se borra para hacer espacio: primero las del respaldo (la más vieja); si no hay, de las tuyas la que menos
-     * escuchas (y, a igual, la que hace más que no suena o se guardó hace más). Nunca las de tus descargas en curso.
-     * Con LOCK. Null si no hay ninguna que se pueda borrar.
+     * Cuál se borra para hacer espacio: la que menos escuchas (y, a igual, la que hace más que no suena o se descargó hace
+     * más). Nunca las de tus descargas en curso. Con LOCK. Null si no hay ninguna que se pueda borrar.
      */
     @Nullable
     private static Entry pickVictim() {
-        Entry auto = null;
-        Entry manual = null;
+        Entry victim = null;
         for (final Entry entry : index().values()) {
             if (batch.contains(entry.id)) continue;
-            if (!entry.manual) {
-                if (auto == null || entry.savedAt < auto.savedAt) auto = entry;
-            } else if (manual == null || lessValuable(entry, manual)) {
-                manual = entry;
-            }
+            if (victim == null || lessValuable(entry, victim)) victim = entry;
         }
-        return auto != null ? auto : manual;
+        return victim;
     }
 
     private static boolean lessValuable(Entry a, Entry b) {
@@ -721,7 +619,7 @@ final class OfflineCache {
                 track.optString("album"),
                 track.optString("artwork"),
                 done.getName(), done.length(), System.currentTimeMillis(), manual));
-        Log.i(TAG, "Guardada" + (manual ? "" : " (respaldo)") + ": " + id + " (" + done.length() / 1024 + " KB)");
+        Log.i(TAG, "Descargada: " + id + " (" + done.length() / 1024 + " KB)");
         return true;
     }
 

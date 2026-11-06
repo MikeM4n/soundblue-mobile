@@ -227,16 +227,10 @@ export async function sourcePlaylists(source: GenreSource): Promise<YtmCard[]> {
 
 /**
  * Canciones de un género o subfiltro: las de sus 2 primeras playlists, al azar (el mismo orden en la sesión), filtradas.
- * `onPartial`: con la primera playlist que llega, sin esperar a la otra (carga progresiva de los Modos). `playlistCount`:
- * de cuántas playlists (más para la caché offline, que guarda hasta 100).
+ * `onPartial`: con la primera playlist que llega, sin esperar a la otra (carga progresiva de los Modos).
  */
-export async function sourceTracks(
-  source: GenreSource,
-  limit = 40,
-  onPartial?: (tracks: Track[]) => void,
-  playlistCount = PLAYLISTS_PER_LIST,
-): Promise<Track[]> {
-  const playlists = (await sourcePlaylists(source)).slice(0, playlistCount)
+export async function sourceTracks(source: GenreSource, limit = 40, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
+  const playlists = (await sourcePlaylists(source)).slice(0, PLAYLISTS_PER_LIST)
   const seed = sessionSeed() ^ hashText(source.key + source.queries.join())
   const selected = favoriteGenres.get()
   const index = selected.length ? genreIndex() : null // se pide ya, mientras llegan las playlists

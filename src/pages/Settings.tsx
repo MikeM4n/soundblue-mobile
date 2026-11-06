@@ -66,7 +66,7 @@ export function Settings() {
 
 /**
  * Modo sin conexión (player/offlineCache.ts): el límite global de descargas (de 50 a 1000 canciones, con lo que se usa y
- * lo que ocupará), «Descargar solo con Wi-Fi», cuántas hay (tuyas y del respaldo) y «Borrar todas las descargas». Solo en
+ * lo que ocupará), «Descargar solo con Wi-Fi», la cola de descargas y «Borrar todas las descargas». Solo en
  * la app de Android.
  */
 function OfflineSection() {
@@ -90,7 +90,7 @@ function OfflineSection() {
   const limit = draft ?? status.target
   const over = Math.max(0, status.count - limit)
   const clear = async () => {
-    if (!window.confirm(`¿Borrar las ${status.count} canciones guardadas, también las que descargaste tú?`)) return
+    if (!window.confirm(`¿Borrar las ${status.count === 1 ? 'canción descargada' : `${status.count} canciones descargadas`} y la cola de descargas?`)) return
     setClearing(true)
     await offlineCache.clear()
     setClearing(false)
@@ -98,9 +98,9 @@ function OfflineSection() {
   }
   // Lo que pasa ahora: descargando, esperando Wi-Fi o internet.
   const note = status.downloading
-    ? `Descargando…${status.queued ? ` (${status.queued} en cola)` : ''}`
+    ? `Descargando 1 canción${status.queued ? ` · ${status.queued} en cola` : ''}`
     : offlineCache.waitingForWifi(status)
-      ? 'Esperando conexión Wi-Fi para descargar'
+      ? `Esperando conexión Wi-Fi para descargar${status.queued ? ` (${status.queued} en cola)` : ''}`
       : status.waiting && !status.online
         ? 'Sin conexión: se seguirán descargando al volver internet'
         : null
@@ -108,7 +108,7 @@ function OfflineSection() {
     <section aria-labelledby="ajustes-offline" className="rounded-lg bg-tarjeta p-4">
       <h2 id="ajustes-offline" className="text-lg font-bold">Modo sin conexión</h2>
       <p className="mt-1 text-sm text-texto-sec">
-        Descarga listas o canciones (botón «Descargar» de cada lista o menú ⋮) para escucharlas sin internet. Además se guardan solas hasta {status.autoTarget} de «Selecciones rápidas» como respaldo: sin internet, si en tu cola ya no hay descargadas, suenan esas hasta que vuelva la conexión y luego tu cola sigue donde iba.
+        Descarga listas o canciones (botón «Descargar» de cada lista o menú ⋮) para escucharlas sin internet. Solo se guarda lo que tú descargas, de a una canción y en el orden en que lo pediste. Sin internet, tu cola salta las que no están descargadas; si ya no queda ninguna, suenan tus descargas hasta que vuelva la conexión y luego tu cola sigue donde iba.
       </p>
       {offlineCache.enabled ? (
         <>
@@ -133,12 +133,9 @@ function OfflineSection() {
           <p className="mt-2 text-sm font-semibold" role="status">
             Usando: {status.count === 1 ? '1 canción' : `${status.count} canciones`} ({size(status.bytes / (1024 * 1024))}) / Límite: {limit} canciones ({size(limit * MB_PER_SONG)})
           </p>
-          <p className="text-sm text-texto-sec">
-            {status.manual === 1 ? '1 descargada por ti' : `${status.manual} descargadas por ti`} · {status.auto} de respaldo («Selecciones rápidas»)
-          </p>
           {over > 0 && (
             <p className="mt-1 text-sm text-amber-400">
-              Con este límite se borrarán {over === 1 ? '1 canción' : `${over} canciones`}: primero las de respaldo y después las que menos escuchas.
+              Con este límite se borrarán {over === 1 ? '1 canción' : `${over} canciones`}: las que menos escuchas.
             </p>
           )}
           <Switch

@@ -165,9 +165,9 @@ function MenuPopover({ anchor, track, removeAction, onPlay, onClose, onChoosePla
           <MenuItem icon={<CloudOff className="size-4" />} onSelect={run(() => offlineCache.remove([track.id]))}>
             Quitar descarga
           </MenuItem>
-        ) : download === 'pending' ? (
+        ) : download !== 'none' ? (
           <MenuItem icon={<X className="size-4" />} onSelect={run(() => offlineCache.cancel([track.id]))}>
-            Cancelar descarga
+            {download === 'downloading' ? 'Cancelar descarga' : 'Quitar de la cola de descargas'}
           </MenuItem>
         ) : (
           <MenuItem icon={<CloudDownload className="size-4" />} onSelect={run(() => offlineCache.download([track]))}>

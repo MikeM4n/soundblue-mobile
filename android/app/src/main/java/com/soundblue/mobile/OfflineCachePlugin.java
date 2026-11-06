@@ -26,7 +26,7 @@ import java.util.Map;
 
 /**
  * Puente de las descargas (OfflineCache) para la app: src/player/offlineCache.ts. Avisa cada cambio de una canción
- * («track»: en cola, descargando, lista, falló, quitada) y cuántas se borraron para hacer espacio («evicted») o no cupieron
+ * («track»: en cola esperando su turno, descargando, lista, falló, quitada) y cuántas se borraron para hacer espacio («evicted») o no cupieron
  * («full»). Mientras la app está abierta escucha los cambios de red: lo que esperaba Wi-Fi (o internet) sigue solo.
  */
 @CapacitorPlugin(name = "OfflineCache")
@@ -98,13 +98,6 @@ public final class OfflineCachePlugin extends Plugin implements OfflineCache.Lis
     }
 
     // ---- Pedidos de la app ----
-
-    /** «Selecciones rápidas» (id, título, artista, álbum, carátula): el respaldo automático guarda las que falten. */
-    @PluginMethod
-    public void offer(final PluginCall call) {
-        OfflineCache.offer(getContext(), tracks(call));
-        call.resolve();
-    }
 
     /** «Descargar» una lista o una canción. `plays`: el historial (decide qué se borra primero si no cabe). */
     @PluginMethod
