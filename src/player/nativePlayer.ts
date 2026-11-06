@@ -7,6 +7,7 @@ import {
   type LoadOptions,
   type MediaBackend,
   type Neighbors,
+  type OfflinePlayback,
   type PlaybackFailure,
   type Track,
   type TrackChange,
@@ -26,6 +27,7 @@ interface NativeState {
   position?: number // segundos
   duration?: number // segundos (0 si aún no se sabe)
   seq?: number // el load al que corresponde el aviso
+  offline?: boolean // modo offline: lo que suena es de la caché del teléfono, no de la cola de la app
   // La canción que tiene cargada (por si la app se abre con la música ya sonando).
   title?: string
   artist?: string
@@ -57,6 +59,7 @@ interface NativePlayerPlugin {
   pause(): Promise<void>
   seek(options: { seconds: number }): Promise<void>
   previous(): Promise<void>
+  next(): Promise<void>
   setVolume(options: { volume: number }): Promise<void>
   setRepeatOne(options: { enabled: boolean }): Promise<void>
   setLiked(options: { id: string; liked: boolean }): Promise<void>
@@ -66,6 +69,7 @@ interface NativePlayerPlugin {
   addListener(eventName: 'trackFailed', listener: (event: PlaybackFailure & { seq?: number }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'likeToggle', listener: (event: LikeToggle) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'queueLow', listener: () => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'offline', listener: (event: { active: boolean; seq?: number }) => void): Promise<PluginListenerHandle>
 }
 
 // android/app/src/main/java/com/soundblue/mobile/PlaybackPlugin.java
@@ -105,6 +109,14 @@ export class NativePlayerBackend implements MediaBackend {
   private duration = 0
   private volume = 1
   private poller: number | undefined
+  // Modo offline: lo que suena de la caché (su reloj va aparte: el de la canción de la cola queda donde iba).
+  private offline = false
+  private offlineId = ''
+  private offlineKey = ''
+  private offlineTimeAt = 0
+  private offlineReadAt = 0
+  private offlinePlaying = false
+  private offlineDuration = 0
 
   constructor(events: BackendEvents) {
     this.events = events
@@ -121,6 +133,8 @@ export class NativePlayerBackend implements MediaBackend {
     this.sent = neighborsKey(track, options)
     this.remember(track, options)
     this.loaded = true
+    this.offline = false // el reproductor nativo deja la caché offline al cargar (PlaybackService.load)
+    this.offlineId = this.offlineKey = ''
     await NativePlayer.load({
       history: options.history.map((t) => nativeTrack(t, options.album)),
       current: nativeTrack(track, options.album),
@@ -174,6 +188,24 @@ export class NativePlayerBackend implements MediaBackend {
     if (this.loaded) void NativePlayer.previous().catch(ignore)
   }
 
+  next() {
+    if (this.loaded) void NativePlayer.next().catch(ignore)
+  }
+
+  /** Adelantar la canción de la caché (modo offline): no toca el segundo donde quedó la de la cola. */
+  seekOffline(seconds: number) {
+    this.offlineTimeAt = Math.max(0, this.offlineDuration ? Math.min(seconds, this.offlineDuration) : seconds)
+    this.offlineReadAt = performance.now()
+    if (this.loaded) void NativePlayer.seek({ seconds: this.offlineTimeAt }).catch(ignore)
+  }
+
+  /** Segundos de la canción de la caché que suena (modo offline). */
+  offlineTime() {
+    if (!this.offlinePlaying) return this.offlineTimeAt
+    const time = this.offlineTimeAt + (performance.now() - this.offlineReadAt) / 1000
+    return this.offlineDuration > 0 ? Math.min(time, this.offlineDuration) : time
+  }
+
   getTime() {
     if (!this.playing) return this.time
     const time = this.time + (performance.now() - this.readAt) / 1000
@@ -209,6 +241,7 @@ export class NativePlayerBackend implements MediaBackend {
     const id = state.id
     if (!id) return // no tiene nada cargado
     this.loaded = true
+    if (state.offline) return this.readOffline(state) // la app se abrió con la caché sonando
     this.read(state)
     this.learn(state)
     this.events.onAttach(id, state.status)
@@ -244,6 +277,7 @@ export class NativePlayerBackend implements MediaBackend {
     void NativePlayer.addListener('state', (state) => {
       if (this.stale(state)) return
       if (!this.loaded) return this.attachTo(state) // empezó a sonar sin la app (el widget)
+      if (state.offline) return this.readOffline(state)
       this.read(state)
       this.events.onState(state.status)
     })
@@ -261,10 +295,42 @@ export class NativePlayerBackend implements MediaBackend {
     void NativePlayer.addListener('queueLow', () => {
       if (this.loaded) this.events.onQueueLow()
     })
+    // Empezó o terminó el modo offline. Al empezar, lo que suena llega enseguida por «state» (con offline: true).
+    void NativePlayer.addListener('offline', (event) => {
+      if (this.stale(event) || event.active || !this.offline) return
+      this.offline = false
+      this.offlineId = this.offlineKey = ''
+      this.offlinePlaying = false
+      this.events.onOffline(null)
+    })
   }
 
   private stale(event: { seq?: number }) {
     return (event.seq ?? 0) < this.seq
+  }
+
+  /** Lo que suena de la caché: su propio reloj, y el motor se entera solo si cambia la canción o su estado. */
+  private readOffline(state: NativeState) {
+    const id = state.id ?? ''
+    this.offline = true
+    if (id !== this.offlineId) {
+      this.offlineId = id
+      this.offlineDuration = 0 // la de la canción anterior de la caché ya no vale
+    }
+    if (typeof state.position === 'number') {
+      this.offlineTimeAt = state.position
+      this.offlineReadAt = performance.now()
+    }
+    if (typeof state.duration === 'number' && state.duration > 0) this.offlineDuration = state.duration
+    this.offlinePlaying = state.status === 'playing'
+    if (this.offlinePlaying) this.startPolling()
+    else this.stopPolling()
+    const key = [id, state.status, this.offlineDuration].join('|')
+    if (!id || key === this.offlineKey) return
+    this.offlineKey = key
+    const track: Track = { id, title: state.title || id, artist: state.artist ?? '', artwork: state.artwork || undefined }
+    const info: OfflinePlayback = { track, state: state.status, duration: this.offlineDuration }
+    this.events.onOffline(info)
   }
 
   private read(state: NativeState) {
@@ -285,7 +351,9 @@ export class NativePlayerBackend implements MediaBackend {
     this.poller = window.setInterval(() => {
       void NativePlayer.getState()
         .then((state) => {
-          if (!this.stale(state)) this.read(state)
+          if (this.stale(state)) return
+          if (state.offline) this.readOffline(state)
+          else if (!this.offline) this.read(state)
         })
         .catch(ignore)
     }, 1000)

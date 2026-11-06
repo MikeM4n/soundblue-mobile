@@ -62,10 +62,11 @@ import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -92,7 +93,11 @@ public final class PlaybackService extends MediaSessionService {
     private static final int AUTO_PER_ARTIST = 2; // …como mucho 2 del mismo artista (como la radio de la app)
     private static final long APP_GRACE_MS = 15_000; // con la app abierta, lo que se le espera antes de seguir solo
     private static final long ENDED_GRACE_MS = 5_000;
-    private static final int RECENT_LIMIT = 200; // las que ya sonaron: al seguir solo no se repiten
+    private static final int RECENT_LIMIT = 300; // las que ya sonaron: al seguir solo no se repiten…
+    private static final long RECENT_MS = 24 * 60 * 60 * 1000L; // …las de las últimas 24 h (se guardan al cerrar)
+    private static final int RECENT_FALLBACK = 20; // si no queda otra, solo se evitan las últimas 20
+    private static final long PROBE_MS = 20_000; // en modo offline, cada cuánto se prueba si volvió internet
+    private static final long PROBE_SOON_MS = 1_500; // al aparecer una red: se prueba enseguida
     /** Comando de sesión del corazón del widget: «Me gusta» / quitar de Tus me gusta la que suena. */
     public static final String ACTION_TOGGLE_LIKE = "com.soundblue.mobile.TOGGLE_LIKE";
     private static final SessionCommand TOGGLE_LIKE = new SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY);
@@ -126,6 +131,12 @@ public final class PlaybackService extends MediaSessionService {
 
         /** Quedan 3 o menos por sonar: la app debe mandar más. */
         void onQueueLow();
+
+        /**
+         * Empezó (true) o terminó (false) el modo offline: sin internet suena la caché offline y la cola de la app queda
+         * guardada; al volver la conexión, la cola sigue donde iba.
+         */
+        void onOfflineChanged(boolean active);
     }
 
     private static PlaybackService instance;
@@ -149,10 +160,19 @@ public final class PlaybackService extends MediaSessionService {
     private boolean endless;
     private String appLastId; // la última canción que mandó la app: las que siguen las agregó el servicio
     private final Set<String> autoIds = new HashSet<>(); // las que agregó el servicio solo
-    private final Set<String> recent = new LinkedHashSet<>(); // las que ya sonaron, de la más vieja a la más nueva
+    // Las que ya sonaron (id → cuándo), de la más vieja a la más nueva. Se guardan: valen también al día siguiente.
+    private final LinkedHashMap<String, Long> recent = new LinkedHashMap<>();
     private boolean advancing; // el servicio pasó solo a la siguiente: cuenta como «terminó la anterior»
     private int extendRequest; // el último pedido de parecidas (los de antes se descartan)
     private final Runnable autoExtend = this::autoExtend;
+    // Modo offline: sin internet suena la caché (OfflineCache) en bucle y la cola de la app espera aquí, con su posición.
+    private boolean offline;
+    private boolean offlineFromExtractor; // entró porque NewPipe falló 10 seguidas (no por falta de internet)
+    private List<MediaItem> savedItems = new ArrayList<>();
+    private int savedIndex;
+    private long savedPosition;
+    private int savedRepeat = Player.REPEAT_MODE_OFF;
+    private final Runnable offlineProbe = this::probeOnline;
 
     static PlaybackService get() {
         return instance;
@@ -202,6 +222,7 @@ public final class PlaybackService extends MediaSessionService {
         final SharedPreferences queuePrefs = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE);
         likedIds.addAll(queuePrefs.getStringSet("liked", new HashSet<>()));
         endless = queuePrefs.getBoolean("endless", true); // también con la app cerrada (el widget)
+        loadRecent(queuePrefs);
         // Si la app está abierta (p. ej. el widget arrancó la música), se entera desde ya de lo que pasa aquí.
         events = PlaybackPlugin.listener();
         instance = this;
@@ -234,6 +255,7 @@ public final class PlaybackService extends MediaSessionService {
         instance = null;
         events = null;
         main.removeCallbacks(autoExtend);
+        main.removeCallbacks(offlineProbe);
         SoundBlueWidgetState.idle(this); // sin servicio no hay nada que controlar: queda la última canción, en pausa
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
@@ -275,6 +297,7 @@ public final class PlaybackService extends MediaSessionService {
         retried = null;
         skippedFailed = null;
         waitingForNetwork = false;
+        dropOffline(); // elegiste otra canción (o la app volvió a cargar la suya): manda la cola de la app
         fromApp(current, after, endless);
         // Al cambiar la cola y luego `playWhenReady`, ExoPlayer pasaría un momento por «en pausa» y la app quitaría la
         // rueda de carga mientras NewPipe extrae el audio. Se avisa un solo estado al final: «cargando» (o «en pausa»).
@@ -312,6 +335,10 @@ public final class PlaybackService extends MediaSessionService {
 
     /** La app cambió su cola (agregaste, quitaste o moviste canciones). Si ya suena otra, espera a que la app se entere. */
     void setNeighbors(String currentId, List<MediaItem> before, List<MediaItem> after, boolean endless) {
+        if (offline) {
+            updateSaved(currentId, before, after, endless); // suena la caché: los cambios van a la cola que espera
+            return;
+        }
         final MediaItem current = player.getCurrentMediaItem();
         if (current == null || !current.mediaId.equals(currentId)) return;
         fromApp(current, after, endless);
@@ -352,12 +379,25 @@ public final class PlaybackService extends MediaSessionService {
         if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
     }
 
+    /** ⏭ en modo offline: la siguiente de la caché (fuera de él, «siguiente» lo decide la app con su cola). */
+    void next() {
+        if (!player.hasNextMediaItem()) return;
+        player.seekToNextMediaItem();
+        if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
+    }
+
     void setVolume(float volume) {
         player.setVolume(volume);
     }
 
     void setRepeatOne(boolean enabled) {
-        player.setRepeatMode(enabled ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF);
+        final int mode = enabled ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF;
+        if (offline) savedRepeat = mode; // la caché sigue en bucle; se aplica al volver a la cola
+        else player.setRepeatMode(mode);
+    }
+
+    boolean isOffline() {
+        return offline;
     }
 
     /** La app avisa si la canción está en Tus me gusta (el corazón del widget). */
@@ -494,14 +534,15 @@ public final class PlaybackService extends MediaSessionService {
 
     /** La cola, la canción y dónde iba, para seguir desde el widget aunque Android cierre la app. */
     private void saveQueue() {
-        final int count = player.getMediaItemCount();
+        // En modo offline se guarda la cola que espera (no la caché): el widget sigue desde ella.
+        final int count = offline ? savedItems.size() : player.getMediaItemCount();
         if (count == 0) return; // vacía (recién creada): se conserva la última guardada
         final JSONArray items = new JSONArray();
-        for (int i = 0; i < count; i++) items.put(trackJson(player.getMediaItemAt(i)));
+        for (int i = 0; i < count; i++) items.put(trackJson(offline ? savedItems.get(i) : player.getMediaItemAt(i)));
         getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit()
                 .putString("items", items.toString())
-                .putInt("index", player.getCurrentMediaItemIndex())
-                .putLong("position", Math.max(0, player.getCurrentPosition()))
+                .putInt("index", offline ? savedIndex : player.getCurrentMediaItemIndex())
+                .putLong("position", Math.max(0, offline ? savedPosition : player.getCurrentPosition()))
                 .apply();
     }
 
@@ -598,6 +639,7 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     private void trimBehind() {
+        if (offline) return; // la caché suena en bucle: no se recorta
         final int extra = player.getCurrentMediaItemIndex() - MAX_BEHIND;
         if (extra > 0) player.removeMediaItems(0, extra);
     }
@@ -607,6 +649,7 @@ public final class PlaybackService extends MediaSessionService {
      * app no manda más (dormida en segundo plano o cerrada), el servicio sigue solo (autoExtend).
      */
     private void checkQueue(boolean notify) {
+        if (offline) return;
         final int left = player.getMediaItemCount() - 1 - player.getCurrentMediaItemIndex();
         if (notify && left <= LOW_QUEUE && events != null) events.onQueueLow();
         if (left <= 0) scheduleExtend(APP_GRACE_MS);
@@ -615,7 +658,7 @@ public final class PlaybackService extends MediaSessionService {
     /** Con la app conectada se le da un margen para mandar las suyas; sin ella, se sigue enseguida. */
     private void scheduleExtend(long graceMs) {
         main.removeCallbacks(autoExtend);
-        if (endless) main.postDelayed(autoExtend, events != null ? graceMs : 0);
+        if (endless && !offline) main.postDelayed(autoExtend, events != null ? graceMs : 0);
     }
 
     /**
@@ -625,7 +668,7 @@ public final class PlaybackService extends MediaSessionService {
      */
     private void autoExtend() {
         final MediaItem item = player.getCurrentMediaItem();
-        if (!endless || item == null || player.hasNextMediaItem() || player.getRepeatMode() != Player.REPEAT_MODE_OFF) return;
+        if (!endless || offline || item == null || player.hasNextMediaItem() || player.getRepeatMode() != Player.REPEAT_MODE_OFF) return;
         final String seed = item.mediaId;
         final int index = player.getCurrentMediaItemIndex();
         final String fallback = index > 0 ? player.getMediaItemAt(index - 1).mediaId : null;
@@ -636,7 +679,7 @@ public final class PlaybackService extends MediaSessionService {
                         ? CompletableFuture.completedFuture(related)
                         : StreamResolver.related(fallback).handle((other, error) -> other))
                 .thenAccept((related) -> main.post(() -> {
-                    if (instance == null || request != extendRequest) return;
+                    if (instance == null || request != extendRequest || offline) return;
                     final MediaItem now = player.getCurrentMediaItem();
                     if (now == null || !now.mediaId.equals(seed) || player.hasNextMediaItem()) return;
                     final List<MediaItem> picks = pickRelated(related);
@@ -658,11 +701,24 @@ public final class PlaybackService extends MediaSessionService {
                 }));
     }
 
-    /** Las parecidas que no sonaron hace poco ni están en la cola, como mucho 2 del mismo artista. */
+    /**
+     * Las parecidas que no sonaron en las últimas 24 h ni están en la cola, como mucho 2 del mismo artista. Si con eso no
+     * queda ninguna, solo se evitan las últimas 20 que sonaron: la música no se detiene.
+     */
     private List<MediaItem> pickRelated(@Nullable List<StreamResolver.Related> related) {
+        final List<MediaItem> picks = pickRelated(related, true);
+        return picks.isEmpty() ? pickRelated(related, false) : picks;
+    }
+
+    private List<MediaItem> pickRelated(@Nullable List<StreamResolver.Related> related, boolean skipDay) {
         final List<MediaItem> picks = new ArrayList<>();
         if (related == null) return picks;
-        final Set<String> used = new HashSet<>(recent);
+        final Set<String> used = new HashSet<>();
+        final long since = System.currentTimeMillis() - RECENT_MS;
+        final List<String> played = new ArrayList<>(recent.keySet());
+        for (int i = played.size() - 1, n = 0; i >= 0; i--, n++) {
+            if (skipDay ? recent.get(played.get(i)) >= since : n < RECENT_FALLBACK) used.add(played.get(i));
+        }
         for (int i = 0; i < player.getMediaItemCount(); i++) used.add(player.getMediaItemAt(i).mediaId);
         final Map<String, Integer> perArtist = new HashMap<>();
         for (final StreamResolver.Related song : related) {
@@ -683,18 +739,46 @@ public final class PlaybackService extends MediaSessionService {
         return picks;
     }
 
-    /** Las que ya sonaron (las más viejas salen): al seguir solo no se repiten. */
+    /** Las que ya sonaron (salen las de más de 24 h y, si son muchas, las más viejas): al seguir solo no se repiten. */
     private void remember(String videoId) {
+        final long now = System.currentTimeMillis();
         recent.remove(videoId);
-        recent.add(videoId);
-        if (recent.size() <= RECENT_LIMIT) return;
-        final Iterator<String> oldest = recent.iterator();
-        oldest.next();
-        oldest.remove();
+        recent.put(videoId, now);
+        final Iterator<Map.Entry<String, Long>> oldest = recent.entrySet().iterator();
+        while (oldest.hasNext()) {
+            final Map.Entry<String, Long> entry = oldest.next();
+            if (recent.size() <= RECENT_LIMIT && entry.getValue() >= now - RECENT_MS) break;
+            oldest.remove();
+        }
+        final JSONObject saved = new JSONObject();
+        try {
+            for (final Map.Entry<String, Long> entry : recent.entrySet()) saved.put(entry.getKey(), entry.getValue());
+        } catch (JSONException ignored) {
+            // no pasa con números
+        }
+        getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit().putString("recent", saved.toString()).apply();
+    }
+
+    private void loadRecent(SharedPreferences prefs) {
+        final long since = System.currentTimeMillis() - RECENT_MS;
+        try {
+            final JSONObject saved = new JSONObject(prefs.getString("recent", "{}"));
+            final List<Map.Entry<String, Long>> entries = new ArrayList<>();
+            for (final Iterator<String> ids = saved.keys(); ids.hasNext(); ) {
+                final String id = ids.next();
+                final long at = saved.optLong(id);
+                if (at >= since) entries.add(new java.util.AbstractMap.SimpleEntry<>(id, at));
+            }
+            entries.sort((a, b) -> Long.compare(a.getValue(), b.getValue()));
+            for (final Map.Entry<String, Long> entry : entries) recent.put(entry.getKey(), entry.getValue());
+        } catch (JSONException error) {
+            Log.w(TAG, "El historial de 24 h está dañado", error);
+        }
     }
 
     /** Pre-carga: la URL de la siguiente se extrae mientras suena la actual, así «siguiente» no espera a NewPipe. */
     private void prefetchNext() {
+        if (offline) return; // la caché ya está en el teléfono (y sin internet no hay qué extraer)
         final int next = player.getNextMediaItemIndex();
         if (next != C.INDEX_UNSET) StreamResolver.prefetch(player.getMediaItemAt(next).mediaId);
     }
@@ -712,8 +796,14 @@ public final class PlaybackService extends MediaSessionService {
         final MediaItem item = player.getCurrentMediaItem();
         if (item == null) return;
         final String videoId = item.mediaId;
-        if (isNetworkError(error) && !isOnline()) {
-            // Sin internet no se salta nada: sigue sola cuando vuelva la conexión (registerNetworkCallback).
+        if (offline) {
+            onOfflineError(item, error);
+            return;
+        }
+        final boolean network = isNetworkError(error);
+        if (network && !isOnline()) {
+            // Sin internet: suena la caché offline (si hay) hasta que vuelva la conexión; si no, la canción espera.
+            if (enterOffline(false)) return;
             waitingForNetwork = true;
             if (events != null) events.onTrackFailed(videoId, "Sin conexión", true, false);
             return;
@@ -725,8 +815,12 @@ public final class PlaybackService extends MediaSessionService {
             player.prepare();
             return;
         }
+        // Otra vez sin respuesta de la red (señal muy débil o una red sin salida a internet): la caché, en vez de saltar.
+        if (network && enterOffline(false)) return;
         failures++;
         final boolean skip = failures <= MAX_FAILURES && player.hasNextMediaItem();
+        // NewPipe no pudo con 10 seguidas: antes de quedarse en silencio, suena la caché (hasta que NewPipe vuelva a poder).
+        if (!skip && failures > MAX_FAILURES && enterOffline(true)) return;
         Log.w(TAG, "No se pudo reproducir " + videoId + (skip ? ", pasando a la siguiente" : ""), error);
         if (events != null) events.onTrackFailed(videoId, message(error), false, skip);
         if (!skip) {
@@ -738,6 +832,151 @@ public final class PlaybackService extends MediaSessionService {
         skippedFailed = videoId;
         player.removeMediaItem(player.getCurrentMediaItemIndex());
         player.prepare();
+    }
+
+    // ---- Modo offline ----
+
+    /**
+     * Sin internet (o NewPipe sin poder extraer nada): la cola de la app queda guardada aquí, con la canción y el segundo
+     * donde iba, y suenan las canciones de la caché offline una tras otra, en bucle, hasta que vuelva la conexión
+     * (probeOnline). False si la caché está vacía.
+     */
+    private boolean enterOffline(boolean fromExtractor) {
+        if (offline) return true;
+        if (player.getCurrentMediaItem() == null) return false;
+        final List<MediaItem> backup = OfflineCache.mediaItems(this);
+        if (backup.isEmpty()) return false;
+        Collections.shuffle(backup);
+        final List<MediaItem> items = new ArrayList<>();
+        for (int i = 0; i < player.getMediaItemCount(); i++) items.add(player.getMediaItemAt(i));
+        savedItems = items;
+        savedIndex = player.getCurrentMediaItemIndex();
+        savedPosition = Math.max(0, player.getCurrentPosition());
+        savedRepeat = player.getRepeatMode();
+        saveQueue(); // la cola de la app con su posición, para el widget (antes de cambiarla por la caché)
+        offline = true;
+        offlineFromExtractor = fromExtractor;
+        waitingForNetwork = false;
+        retried = null;
+        main.removeCallbacks(autoExtend);
+        extendRequest++;
+        final boolean play = player.getPlayWhenReady();
+        loading = true;
+        try {
+            player.setMediaItems(backup, 0, 0);
+            player.setRepeatMode(Player.REPEAT_MODE_ALL);
+            player.prepare();
+            player.setPlayWhenReady(play);
+        } finally {
+            loading = false;
+        }
+        Log.i(TAG, "Modo offline: " + backup.size() + " canciones de la caché" + (fromExtractor ? " (NewPipe falla)" : ""));
+        if (events != null) events.onOfflineChanged(true);
+        notifyState();
+        scheduleProbe(PROBE_MS);
+        return true;
+    }
+
+    /**
+     * Volvió internet: se deja de sonar la caché y la cola de la app sigue en la canción y el segundo donde iba (sonando,
+     * salvo que hayas pausado la caché).
+     */
+    private void exitOffline() {
+        if (!offline) return;
+        final List<MediaItem> items = savedItems;
+        final int index = Math.max(0, Math.min(savedIndex, items.size() - 1));
+        final long position = savedPosition;
+        final boolean play = player.getPlayWhenReady();
+        dropOffline();
+        if (items.isEmpty()) return;
+        failures = 0;
+        loading = true;
+        try {
+            player.setMediaItems(items, index, position);
+            player.prepare();
+            player.setPlayWhenReady(play);
+        } finally {
+            loading = false;
+        }
+        Log.i(TAG, "Fin del modo offline: sigue la cola donde iba");
+        notifyState();
+        prefetchNext();
+        checkQueue(false);
+    }
+
+    /** Termina el modo offline sin volver a poner la cola guardada (la app manda la suya: load). */
+    private void dropOffline() {
+        if (!offline) return;
+        offline = false;
+        offlineFromExtractor = false;
+        retried = null;
+        waitingForNetwork = false;
+        main.removeCallbacks(offlineProbe);
+        player.setRepeatMode(savedRepeat);
+        savedItems = new ArrayList<>();
+        if (events != null) events.onOfflineChanged(false);
+    }
+
+    /** La app cambió su cola mientras suena la caché: se actualiza la que espera (si sigue siendo la misma canción). */
+    private void updateSaved(String currentId, List<MediaItem> before, List<MediaItem> after, boolean endless) {
+        if (savedItems.isEmpty() || savedIndex >= savedItems.size() || !savedItems.get(savedIndex).mediaId.equals(currentId)) return;
+        final MediaItem current = savedItems.get(savedIndex);
+        final List<MediaItem> items = new ArrayList<>(before);
+        items.add(current);
+        items.addAll(after);
+        savedItems = items;
+        savedIndex = before.size();
+        fromApp(current, after, endless);
+    }
+
+    /** Una de la caché no se pudo reproducir (archivo dañado): sale de la caché y suena la siguiente. */
+    private void onOfflineError(MediaItem item, PlaybackException error) {
+        Log.w(TAG, "No se pudo reproducir " + item.mediaId + " de la caché offline", error);
+        OfflineCache.remove(this, item.mediaId);
+        if (player.getMediaItemCount() <= 1) {
+            // No queda ninguna que suene: vuelve la cola y espera a internet como antes (enterOffline ya no tiene caché).
+            exitOffline();
+            return;
+        }
+        player.removeMediaItem(player.getCurrentMediaItemIndex());
+        player.prepare();
+    }
+
+    /** «Limpiar caché offline» con la caché sonando: la cola vuelve (y, sin internet, espera la conexión). */
+    void onOfflineCacheCleared() {
+        if (offline) exitOffline();
+    }
+
+    private void scheduleProbe(long delayMs) {
+        main.removeCallbacks(offlineProbe);
+        if (offline) main.postDelayed(offlineProbe, delayMs);
+    }
+
+    /**
+     * ¿Volvió internet? Se prueba a extraer la canción que espera: si NewPipe la da (o YouTube responde, aunque sea que
+     * no está disponible), la cola sigue. Si se entró por fallos de NewPipe, solo cuando la extracción vuelva a funcionar.
+     */
+    private void probeOnline() {
+        if (!offline || savedItems.isEmpty()) return;
+        if (!isOnline()) {
+            scheduleProbe(PROBE_MS);
+            return;
+        }
+        final String videoId = savedItems.get(Math.max(0, Math.min(savedIndex, savedItems.size() - 1))).mediaId;
+        StreamResolver.probe(videoId).whenComplete((stream, error) -> main.post(() -> {
+            if (!offline || instance == null) return;
+            final boolean back = error == null || (!offlineFromExtractor && !isNetworkCause(error));
+            if (back) exitOffline();
+            else scheduleProbe(PROBE_MS);
+        }));
+    }
+
+    private static boolean isNetworkCause(Throwable error) {
+        return hasCause(error, UnknownHostException.class)
+                || hasCause(error, ConnectException.class)
+                || hasCause(error, NoRouteToHostException.class)
+                || hasCause(error, SocketTimeoutException.class)
+                || hasCause(error, java.io.InterruptedIOException.class);
     }
 
     private static String message(PlaybackException error) {
@@ -776,7 +1015,12 @@ public final class PlaybackService extends MediaSessionService {
             @Override
             public void onAvailable(Network network) {
                 main.post(() -> {
-                    if (!waitingForNetwork || instance == null) return;
+                    if (instance == null) return;
+                    if (offline) {
+                        scheduleProbe(PROBE_SOON_MS); // ¿ya hay internet de verdad? Si sí, sigue la cola
+                        return;
+                    }
+                    if (!waitingForNetwork) return;
                     waitingForNetwork = false;
                     if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
                 });
@@ -805,6 +1049,12 @@ public final class PlaybackService extends MediaSessionService {
         public void onMediaItemTransition(@Nullable MediaItem item, int reason) {
             if (item == null) return;
             retried = null;
+            if (offline) {
+                // La caché offline: la app no la sigue como su cola (le llega por «state», con offline: true).
+                remember(item.mediaId);
+                notifyState();
+                return;
+            }
             final String cause = skippedFailed != null ? "failed"
                     : reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || advancing ? "auto" : "seek";
             skippedFailed = null;
@@ -819,7 +1069,7 @@ public final class PlaybackService extends MediaSessionService {
 
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
-            if (isPlaying) {
+            if (isPlaying && !offline) {
                 failures = 0;
                 prefetchNext();
             }

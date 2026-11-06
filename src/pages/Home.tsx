@@ -22,6 +22,7 @@ import { ytmHome, type YtmCard, type YtmSection } from '../data/ytmusic'
 import { library, useLibrary } from '../library/store'
 import { greeting } from '../lib/format'
 import { player } from '../player/engine'
+import { offlineCache } from '../player/offlineCache'
 import { coverSources, type Track } from '../player/types'
 import { useNowPlaying } from '../player/useNowPlaying'
 
@@ -209,6 +210,10 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
   }
   const list = loaded[genre]
   const tracks = Array.isArray(list) ? list.filter((track) => !hide.has(track.id)).slice(0, 16) : []
+  // Caché offline (Android): estas canciones se guardan en el teléfono para cuando no haya internet (player/offlineCache.ts).
+  useEffect(() => {
+    if (Array.isArray(list)) offlineCache.offer(list)
+  }, [list])
   return (
     <Section
       title="Selecciones rápidas"

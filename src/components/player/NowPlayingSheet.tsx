@@ -30,7 +30,7 @@ const INTERACTIVE = 'button, a, input, [role="menu"], [data-queue-panel], [data-
  * Gestos: hacia abajo = minimizar (si el panel de la cola está cerrado) · hacia arriba = «Próximas en sonar».
  */
 export function NowPlayingSheet() {
-  const { current, contextName, error } = usePlayer()
+  const { current, contextName, error, offline } = usePlayer()
   const { favorites } = useLibrary()
   const navigate = useNavigate()
   const location = useLocation()
@@ -197,7 +197,7 @@ export function NowPlayingSheet() {
         </div>
         {/* Abajo, alto fijo: aviso de segundo plano, título, artista, progreso, controles y la pista de la cola. */}
         <div className="shrink-0">
-          <TrackInfo track={current} liked={liked} error={error} />
+          <TrackInfo track={current} liked={liked} error={error} offline={offline} />
           <div className="lg:hidden"><QueueHint onOpen={() => setQueueOpen(true)} /></div>
         </div>
       </section>
@@ -330,7 +330,7 @@ function ViewToggle({ view }: { view: YouTubeView }) {
  * Título (máx. 2 líneas, alto reservado para 2), artista, álbum o aviso de error (siempre una línea), favorito,
  * barra de progreso y controles. Su alto no cambia entre canciones.
  */
-function TrackInfo({ track, liked, error }: { track: Track; liked: boolean; error: string | null }) {
+function TrackInfo({ track, liked, error, offline }: { track: Track; liked: boolean; error: string | null; offline: boolean }) {
   return (
     <div className="px-6 pt-2 lg:px-10">
       <div className="flex items-end gap-3">
@@ -340,7 +340,7 @@ function TrackInfo({ track, liked, error }: { track: Track; liked: boolean; erro
           </div>
           <p className="truncate text-texto-sec">{track.artist}</p>
           {error ? (
-            <p role="alert" className="truncate text-xs text-red-300">
+            <p role={offline ? 'status' : 'alert'} className={`truncate text-xs ${offline ? 'text-white/70' : 'text-red-300'}`}>
               {error}
             </p>
           ) : (

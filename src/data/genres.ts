@@ -23,6 +23,9 @@ export const NOT_ORIGINAL = /\b(cover|karaoke|instrumental|slowed|sped ?up|night
 
 const PLAYLISTS_PER_LIST = 2 // las canciones de un género o filtro salen de sus 2 primeras playlists
 const INDEX_WAIT_MS = 20000 // la primera vez el índice de géneros tarda en armarse: la lista de un Modo lo espera
+const FIRST_BATCH = 5 // carga progresiva de un Modo: con estas ya se puede dar ▶ (el resto llega en segundo plano)
+const RECENT_MS = 24 * 3600 * 1000 // anti-repetición: lo que sonó en las últimas 24 h no se recomienda…
+const MIN_FRESH = 8 // …salvo que sin eso queden menos de 8 (van al final)
 const SEASONAL = /halloween|navidad|navideñ|christmas|diciembre|decembrin/i
 // Palabras de género: una playlist que nombra varios («Salsa y Merengue») va después de las de un solo género.
 const GENRE_WORDS = [
@@ -222,17 +225,33 @@ export async function sourcePlaylists(source: GenreSource): Promise<YtmCard[]> {
   return fitting.length ? [...fitting].sort((a, b) => mixes(a.title) - mixes(b.title)) : found.slice(0, PLAYLISTS_PER_LIST)
 }
 
-/** Canciones de un género o subfiltro: las de sus 2 primeras playlists, al azar (el mismo orden en la sesión), filtradas. */
-export async function sourceTracks(source: GenreSource, limit = 40): Promise<Track[]> {
+/**
+ * Canciones de un género o subfiltro: las de sus 2 primeras playlists, al azar (el mismo orden en la sesión), filtradas.
+ * `onPartial`: con la primera playlist que llega, sin esperar a la otra (carga progresiva de los Modos).
+ */
+export async function sourceTracks(source: GenreSource, limit = 40, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
   const playlists = (await sourcePlaylists(source)).slice(0, PLAYLISTS_PER_LIST)
-  const pages = await Promise.all(playlists.map((playlist) => ytmPage(playlist.id).catch(() => null)))
-  const random = seededRandom(sessionSeed() ^ hashText(source.key + source.queries.join()))
-  const tracks = strictFilter(interleave(pages.map((page) => shuffle(page?.tracks ?? [], random))), limit * 2)
+  const seed = sessionSeed() ^ hashText(source.key + source.queries.join())
   const selected = favoriteGenres.get()
-  if (!selected.length) return tracks.slice(0, limit)
-  const index = await genreIndex()
-  const accepted = new Set(selected)
-  return tracks.filter((track) => [...genresOf(track, index)].some((genre) => accepted.has(genre))).slice(0, limit)
+  const index = selected.length ? genreIndex() : null // se pide ya, mientras llegan las playlists
+  index?.catch(() => {}) // el error se lee en compose
+  const pages: (Track[] | null)[] = playlists.map(() => null)
+  // Cada playlist con su propio orden al azar: el resultado es el mismo llegue primero la que llegue.
+  const compose = async () => {
+    const shuffled = pages.map((tracks, i) => shuffle(tracks ?? [], seededRandom(seed ^ hashText(playlists[i].id))))
+    const tracks = strictFilter(interleave(shuffled), limit * 2)
+    if (!index) return tracks.slice(0, limit)
+    const known = await index
+    const accepted = new Set(selected)
+    return tracks.filter((track) => [...genresOf(track, known)].some((genre) => accepted.has(genre))).slice(0, limit)
+  }
+  await Promise.all(
+    playlists.map(async (playlist, i) => {
+      pages[i] = (await ytmPage(playlist.id).catch(() => null))?.tracks ?? []
+      if (onPartial && pages.some((page) => page === null)) onPartial(await compose())
+    }),
+  )
+  return compose()
 }
 
 /**
@@ -244,34 +263,67 @@ export async function prefetchSource(source: GenreSource): Promise<void> {
   await Promise.all(playlists.map((playlist) => ytmPage(playlist.id).catch(() => null)))
 }
 
-/** Canciones de un modo: un subfiltro, o todos mezclados («Todo»), sin las de un género que choca con el del modo. */
-export async function modeTracks(mode: Mode, filterKey: string | null, limit = 50): Promise<Track[]> {
+/**
+ * Canciones de un modo: un subfiltro, o todos mezclados («Todo»), sin las de un género que choca con el del modo.
+ * Carga progresiva (`onPartial`): en cuanto hay al menos 5 se entregan, para poder darle ▶ enseguida, y cada vez que
+ * llega otra playlist se entregan más. Lo ya entregado no se mueve ni desaparece: lo nuevo va al final.
+ */
+export async function modeTracks(mode: Mode, filterKey: string | null, limit = 50, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
   const sources = filterKey ? mode.filters.filter((f) => f.key === filterKey) : mode.filters
   const selected = favoriteGenres.get()
-  const [lists, index, globalIndex] = await Promise.all([
-    Promise.all(sources.map((source) => tracksForMode(mode, source, limit).catch(() => []))),
-    mode.genres ? genreIndexSoon(INDEX_WAIT_MS) : null,
-    selected.length ? genreIndex().catch(() => null) : null,
-  ])
-  const scope = genreScope(new Set(mode.genres))
-  const fits = (track: Track) => (!index || !clashes(track, index, scope)) && (!selected.length || (!!globalIndex && [...genresOf(track, globalIndex)].some((genre) => selected.includes(genre))))
-  return strictFilter(interleave(lists.map((list) => list.filter(fits))), limit)
+  const indexes = Promise.all([mode.genres ? genreIndexSoon(INDEX_WAIT_MS) : null, selected.length ? genreIndex().catch(() => null) : null])
+  const lists: Track[][] = sources.map(() => [])
+  let shown: Track[] = []
+  let done = false
+  const merge = async () => {
+    const [index, globalIndex] = await indexes
+    const scope = genreScope(new Set(mode.genres))
+    const fits = (track: Track) => (!index || !clashes(track, index, scope)) && (!selected.length || (!!globalIndex && [...genresOf(track, globalIndex)].some((genre) => selected.includes(genre))))
+    const next = strictFilter(interleave(lists.map((list) => list.filter(fits))), limit)
+    shown = capPerArtist([...shown, ...next]).slice(0, limit) // lo ya entregado queda primero y en su lugar
+    return shown
+  }
+  const deliver = async () => {
+    if (!onPartial || done) return
+    const tracks = await merge()
+    if (!done && tracks.length >= FIRST_BATCH) onPartial([...tracks])
+  }
+  await Promise.all(
+    sources.map(async (source, i) => {
+      lists[i] = await tracksForMode(mode, source, limit, (partial) => {
+        lists[i] = partial
+        void deliver()
+      }).catch(() => lists[i])
+      await deliver()
+    }),
+  )
+  done = true
+  return [...(await merge())]
 }
 
 /** Rumba prioriza videos populares; si no hay Data API, falla o no encuentra pistas, usa playlists de YouTube Music. */
-async function tracksForMode(mode: Mode, source: GenreSource, limit: number): Promise<Track[]> {
-  if (mode.key !== 'rumba') return strictFilter(await sourceTracks(source), limit)
+async function tracksForMode(mode: Mode, source: GenreSource, limit: number, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
+  const partial = onPartial && ((tracks: Track[]) => onPartial(strictFilter(tracks, limit)))
+  if (mode.key !== 'rumba') return strictFilter(await sourceTracks(source, 40, partial), limit)
   try {
     const popular = strictFilter(await youtubePopularTracks(source.queries[0]), limit)
     if (popular.length) return popular
   } catch {
     // La API oficial es opcional; el modo sigue con el catálogo normal de YouTube Music.
   }
-  return strictFilter(await sourceTracks(source), limit)
+  return strictFilter(await sourceTracks(source, 40, partial), limit)
 }
 
-/** Los filtros de las recomendaciones: sin covers, sin artistas que sueles saltar, 2 por artista y sin repetidas. */
+/**
+ * Los filtros de las recomendaciones: sin covers, sin artistas que sueles saltar, sin lo que sonó en las últimas 24 h
+ * (anti-repetición), 2 por artista y sin repetidas. Si quitar lo de las últimas 24 h deja la lista casi vacía, esas van
+ * al final (mejor repetir que no tener qué poner).
+ */
 function strictFilter(tracks: Track[], limit: number): Track[] {
   const skipped = listening.skippedArtists()
-  return capPerArtist(tracks.filter((track) => !NOT_ORIGINAL.test(track.title) && !skipped.has(artistKey(track.artist)))).slice(0, limit)
+  const recent = listening.playedWithin(RECENT_MS)
+  const original = tracks.filter((track) => !NOT_ORIGINAL.test(track.title) && !skipped.has(artistKey(track.artist)))
+  const fresh = original.filter((track) => !recent.has(track.id))
+  const list = fresh.length >= Math.min(limit, MIN_FRESH) ? fresh : [...fresh, ...original.filter((track) => recent.has(track.id))]
+  return capPerArtist(list).slice(0, limit)
 }

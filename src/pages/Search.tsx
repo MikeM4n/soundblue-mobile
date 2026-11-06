@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core'
 import { AudioWaveform, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { usePlayer } from '../player/usePlayer'
@@ -10,21 +11,23 @@ import { Cover } from '../components/ui/Cover'
 import { YtmCardRow } from '../components/ui/YtmShelf'
 import { categories } from '../data/categories'
 import { createRadio } from '../data/radio'
-import { KeyError, QuotaError, youtubeSearch, youtubeSearchEnabled } from '../data/youtube'
-import { ytmSearch, type YtmCard } from '../data/ytmusic'
+import { KeyError, QuotaError, youtubeSearch, youtubeSearchEnabled, type YouTubeResults } from '../data/youtube'
+import { ytmSearch, type YtmCard, type YtmSearchResults } from '../data/ytmusic'
 import { player } from '../player/engine'
 import type { Track } from '../player/types'
 import { useNowPlaying } from '../player/useNowPlaying'
 
-// Música, en este orden de respaldo:
-// 1) YouTube Music (su API interna, ver data/ytmusic.ts): canciones, álbumes, artistas y playlists, como en su app.
-// 2) Si falla y hay clave: la YouTube Data API oficial (data/youtube.ts).
-// Si ambas fuentes fallan, se muestra un aviso sin inventar resultados.
+// Música, sin ningún filtro de popularidad (lo que escribes es lo que buscas, aunque tenga pocas vistas):
+// 1) YouTube Music (su API interna, ver data/ytmusic.ts): canciones, videos, álbumes, artistas y playlists.
+// 2) En la app de Android, a la vez, la búsqueda normal de YouTube con NewPipe: cualquier video (van en «Videos»).
+// 3) Fuera de Android, si YouTube Music no trae nada y hay clave: la YouTube Data API oficial (data/youtube.ts).
+// «Solo populares» (apagado por defecto) deja solo lo que pasa de 1 millón de vistas.
+// Si todas las fuentes fallan, se muestra un aviso sin inventar resultados.
 
 interface MusicResults {
   query: string
   songs: Track[]
-  videos: Track[] // videos musicales de la API oficial
+  videos: Track[] // videos de YouTube (también los de pocas vistas o subidos por usuarios)
   albums: YtmCard[]
   artists: YtmCard[]
   playlists: YtmCard[] // con «+» para guardarlas en Tu biblioteca
@@ -33,6 +36,9 @@ interface MusicResults {
 }
 
 const QUOTA_MESSAGE = 'Se acabaron por hoy las búsquedas en YouTube. Vuelve a intentarlo mañana.'
+const POPULAR_VIEWS = 1_000_000 // «Solo populares»
+const isAndroid = Capacitor.getPlatform() === 'android'
+const isPopular = (track: Track) => (track.viewCount ?? 0) >= POPULAR_VIEWS
 
 function youtubeErrorMessage(error: unknown): string {
   if (error instanceof QuotaError) return QUOTA_MESSAGE
@@ -40,33 +46,42 @@ function youtubeErrorMessage(error: unknown): string {
   return 'No se pudo buscar en YouTube. Revisa tu conexión.'
 }
 
-async function searchMusic(query: string): Promise<MusicResults> {
-  const empty = { query, songs: [], videos: [], albums: [], artists: [], playlists: [] }
-  let result: MusicResults
-  try {
-    const ytm = await ytmSearch(query)
-    result = { ...empty, ...ytm, source: 'ytm', notice: null }
-    // YouTube Music can successfully return an empty parsed shelf. Treat that like a miss and
-    // ask the official API as a secondary source when configured.
-    if (!ytm.songs.length && !ytm.albums.length && !ytm.artists.length && !ytm.playlists.length && youtubeSearchEnabled) {
-      try {
-        const api = await youtubeSearch(query)
-        result = { ...result, songs: api.songs, videos: api.videos, source: 'api' }
-      } catch (error) {
-        result = { ...result, notice: youtubeErrorMessage(error) }
-      }
-    }
-  } catch {
-    if (!youtubeSearchEnabled) return { ...empty, source: 'ytm', notice: 'No se pudo conectar con el catálogo. Revisa tu conexión.' }
+/** Junta YouTube Music y la búsqueda de YouTube, sin repetidas (una canción que ya está en «Canciones» no va en «Videos»). */
+function combine(query: string, ytm: YtmSearchResults | null, api: YouTubeResults | null, notice: string | null): MusicResults {
+  const songs = ytm?.songs.length ? ytm.songs : (api?.songs ?? [])
+  const taken = new Set(songs.map((track) => track.id))
+  const fromApi = api ? (songs === api.songs ? api.videos : [...api.videos, ...api.songs]) : []
+  const videos = [...(ytm?.videos ?? []), ...fromApi].filter((track) => !taken.has(track.id) && !!taken.add(track.id))
+  return { query, songs, videos, albums: ytm?.albums ?? [], artists: ytm?.artists ?? [], playlists: ytm?.playlists ?? [], source: ytm ? 'ytm' : 'api', notice }
+}
+
+/**
+ * Busca en todas las fuentes. La búsqueda explícita del usuario no hereda los filtros de la radio (géneros, vistas).
+ * `onPartial`: en Android, lo de YouTube Music se muestra en cuanto llega, sin esperar a NewPipe.
+ */
+async function searchMusic(query: string, onPartial?: (results: MusicResults) => void): Promise<MusicResults> {
+  const youtube = isAndroid ? youtubeSearch(query) : null
+  youtube?.catch(() => {}) // el error se lee abajo
+  const ytm = await ytmSearch(query).catch(() => null)
+  const empty = !ytm || (!ytm.songs.length && !ytm.videos.length && !ytm.albums.length && !ytm.artists.length && !ytm.playlists.length)
+  let api: YouTubeResults | null = null
+  let notice: string | null = null
+  if (youtube) {
+    if (ytm && !empty) onPartial?.(combine(query, ytm, null, null))
     try {
-      const api = await youtubeSearch(query)
-      result = { ...empty, songs: api.songs, videos: api.videos, source: 'api', notice: null }
+      api = await youtube
     } catch (error) {
-      return { ...empty, source: 'api', notice: youtubeErrorMessage(error) }
+      if (empty) notice = youtubeErrorMessage(error)
+    }
+  } else if (empty && youtubeSearchEnabled) {
+    try {
+      api = await youtubeSearch(query)
+    } catch (error) {
+      notice = youtubeErrorMessage(error)
     }
   }
-  // La búsqueda explícita del usuario no debe heredar filtros de géneros de la radio.
-  return result
+  if (!ytm && !api) notice ??= 'No se pudo conectar con el catálogo. Revisa tu conexión.'
+  return combine(query, ytm, api, notice)
 }
 
 /** Buscar: canciones, álbumes, artistas y playlists (que se pueden guardar con «+») de YouTube Music, como en Spotify. */
@@ -74,6 +89,7 @@ export function Search() {
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
   const [music, setMusic] = useState<MusicResults | null>(null)
+  const [popularOnly, setPopularOnly] = useState(false) // «Solo populares»: apagado, sale todo
   const { open } = useNowPlaying()
   const playerState = usePlayer()
   const libraryState = useLibrary()
@@ -87,7 +103,7 @@ export function Search() {
   useEffect(() => {
     if (!debounced) return
     let alive = true
-    searchMusic(debounced)
+    searchMusic(debounced, (partial) => alive && setMusic(partial))
       .then((results) => alive && setMusic(results))
       .catch((error) => alive && setMusic({ query: debounced, songs: [], videos: [], albums: [], artists: [], playlists: [], source: 'ytm', notice: youtubeErrorMessage(error) }))
     return () => {
@@ -112,9 +128,12 @@ export function Search() {
   const localMatches = [...new Map(localTracks
     .filter((track) => normalizedQuery.length > 0 && `${normalize(track.title)} ${normalize(track.artist)}`.includes(normalizedQuery))
     .map((track) => [track.id, track])).values()]
-  const remoteSongs = fromMusic?.songs ?? []
+  const allRemote = [...(fromMusic?.songs ?? []), ...(fromMusic?.videos ?? [])]
+  const keep = (track: Track) => !popularOnly || isPopular(track)
+  const hidden = popularOnly ? allRemote.filter((track) => !isPopular(track)).length : 0
+  const remoteSongs = (fromMusic?.songs ?? []).filter(keep)
   const songs = [...localMatches, ...remoteSongs.filter((track) => !localMatches.some((local) => local.id === track.id))]
-  const videos = fromMusic?.videos ?? []
+  const videos = (fromMusic?.videos ?? []).filter(keep).filter((track) => !localMatches.some((local) => local.id === track.id))
   const results = [...songs, ...videos] // en este orden sigue sonando al terminar cada una
 
   // Suena la elegida y después su radio (mismo artista y mismo género o parecido; ver data/radio.ts). Antes seguían los
@@ -166,7 +185,18 @@ export function Search() {
             )}
           </label>
         </form>
-        <p className="mt-2 text-xs text-texto-sec">Canciones, álbumes, artistas y playlists.</p>
+        <div className="mt-2 flex max-w-xl items-center justify-between gap-3">
+          <p className="min-w-0 text-xs text-texto-sec">Canciones, videos, álbumes, artistas y playlists.</p>
+          {/* Sin filtro de vistas por defecto: solo si lo pides. */}
+          <button
+            type="button"
+            aria-pressed={popularOnly}
+            onClick={() => setPopularOnly((on) => !on)}
+            className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition-colors ${popularOnly ? 'bg-acento text-white' : 'bg-contraste/10 text-texto hover:bg-contraste/15'}`}
+          >
+            {popularOnly ? '✓ ' : ''}Solo populares
+          </button>
+        </div>
       </div>
 
       {q ? (
@@ -194,6 +224,7 @@ export function Search() {
           <div className="mt-3 space-y-1 px-4 text-sm text-texto-sec md:px-6">
             {searching && <p>Buscando…</p>}
             {fromMusic?.notice && <p role="status">{fromMusic.notice}</p>}
+            {hidden > 0 && <p>Solo populares (más de 1 millón de vistas): {hidden === 1 ? 'se ocultó 1 resultado' : `se ocultaron ${hidden} resultados`}.</p>}
           </div>
           {nothing && <p className="mt-6 px-4 text-texto-sec md:px-6">No encontramos «{q}».</p>}
         </div>

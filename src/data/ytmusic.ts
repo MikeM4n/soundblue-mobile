@@ -54,6 +54,7 @@ export interface YtmPage {
 
 export interface YtmSearchResults {
   songs: Track[]
+  videos: Track[] // videos de YouTube (también los de pocas vistas o subidos por usuarios)
   albums: YtmCard[]
   artists: YtmCard[]
   playlists: YtmCard[] // de YouTube Music y de la comunidad: se pueden guardar en Tu biblioteca
@@ -111,6 +112,20 @@ function seconds(text: string | undefined): number | undefined {
   return text.split(':').reduce((total, part) => total * 60 + Number(part), 0)
 }
 
+// «16 M reproducciones», «3,2 M de visualizaciones», «2,1 K visualizaciones», «1,2 mil M de vistas», «29 reproducciones».
+const VIEWS = /^([\d.,]+)\s*(mil\s*M|K|M|B)?\s*(?:de\s+)?(?:reproducciones|visualizaciones|vistas|views|plays)$/i
+const VIEW_SCALE: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, milm: 1e9 }
+
+/** Las vistas de un texto de YouTube Music, o undefined si no lo es. */
+export function viewsOf(text: string): number | undefined {
+  const match = text.trim().match(VIEWS)
+  if (!match) return undefined
+  const scale = VIEW_SCALE[(match[2] ?? '').toLowerCase().replace(/\s+/g, '')] ?? 1
+  // «3,2» es 3.2 (coma decimal); «1.234» es 1234 (punto de miles).
+  const number = Number(scale === 1 ? match[1].replace(/[.,]/g, '') : match[1].replace(/\./g, '').replace(',', '.'))
+  return Number.isFinite(number) ? Math.round(number * scale) : undefined
+}
+
 /** «Bad Bunny y Jhayco • EL ÚLTIMO TOUR DEL MUNDO • 3:26» → grupos separados por « • ». */
 function groups(text: Json): Run[][] {
   const result: Run[][] = [[]]
@@ -134,8 +149,8 @@ interface Defaults {
   artwork?: string
 }
 
-/** Canción de una lista (búsqueda, «Selecciones rápidas», playlist o álbum). */
-function fromListItem(r: Json, defaults: Defaults = {}): Track | null {
+/** Canción de una lista (búsqueda, «Selecciones rápidas», playlist o álbum). `video`: resultado de «Videos» de Buscar. */
+function fromListItem(r: Json, defaults: Defaults = {}, video = false): Track | null {
   const videoId: string | undefined =
     r?.playlistItemData?.videoId ?? r?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId
   const columns: Json[] = (r?.flexColumns ?? []).map((column: Json) => column?.musicResponsiveListItemFlexColumnRenderer?.text)
@@ -145,15 +160,18 @@ function fromListItem(r: Json, defaults: Defaults = {}): Track | null {
   const artistGroup = line.find((group) => group.some((run) => pageType(run.navigationEndpoint) === 'MUSIC_PAGE_TYPE_ARTIST')) ?? line[0]
   const albumRun = columns.slice(1).flatMap(runsOf).find((run) => pageType(run.navigationEndpoint) === 'MUSIC_PAGE_TYPE_ALBUM')
   const durationText = plain(r?.fixedColumns?.[0]?.musicResponsiveListItemFixedColumnRenderer?.text) || joined(line.at(-1) ?? [])
+  // Las vistas van en su propia columna («16 M reproducciones») o en la línea del artista («… • 3,2 M de visualizaciones»).
+  const viewCount = [...columns.slice(2).map(plain), ...line.map(joined)].map(viewsOf).find((views) => views !== undefined)
   return {
     id: videoId,
     title: cleanTitle(title),
-    artist: (artistGroup && joined(artistGroup)) || defaults.artist || 'YouTube Music',
+    artist: ((artistGroup && joined(artistGroup)) || defaults.artist || 'YouTube Music').replace(/^@/, ''), // canal «@Usuario»
     artistId: artistIdOf(artistGroup ?? []) ?? defaults.artistId,
     album: albumRun?.text ?? defaults.album,
     duration: seconds(durationText),
     artwork: squareArt(lastThumb(r?.thumbnail?.musicThumbnailRenderer?.thumbnail)) ?? defaults.artwork,
-    ytMusic: true,
+    ytMusic: !video,
+    viewCount,
   }
 }
 
@@ -301,13 +319,17 @@ export function ytmHome(): Promise<YtmSection[]> {
   })
 }
 
-/** Búsqueda como en YouTube Music: canciones, álbumes, artistas y playlists. */
+/**
+ * Búsqueda como en YouTube Music: canciones, videos, álbumes, artistas y playlists. Sin filtro de popularidad: trae
+ * también canciones y videos con pocas vistas (cada uno con sus vistas, para «Solo populares» en Buscar).
+ */
 export function ytmSearch(query: string): Promise<YtmSearchResults> {
   const q = query.trim().toLowerCase().replace(/\s+/g, ' ')
-  // v3 invalida resultados anteriores; las consultas vacías tampoco se conservan en caché.
-  return remember(`buscar:v3:${q}`, async () => {
-    const [songs, albums, artists, featured, community] = await Promise.all([
+  // v4 invalida resultados anteriores (sin videos ni vistas); las consultas vacías tampoco se conservan en caché.
+  return remember(`buscar:v4:${q}`, async () => {
+    const [songs, videos, albums, artists, featured, community] = await Promise.all([
       call('search', { query: q, params: FILTER.songs }),
+      call('search', { query: q, params: VIDEOS_FILTER }).catch(() => null),
       call('search', { query: q, params: FILTER.albums }).catch(() => null),
       call('search', { query: q, params: FILTER.artists }).catch(() => null),
       call('search', { query: q, params: FILTER.featuredPlaylists }).catch(() => null),
@@ -315,15 +337,20 @@ export function ytmSearch(query: string): Promise<YtmSearchResults> {
     ])
     const cards = (json: Json) => searchShelf(json).map((item) => cardFromListItem(item.musicResponsiveListItemRenderer)).filter(notEmpty)
     const seen = new Set<string>()
+    const songList = searchShelf(songs).map((item) => fromListItem(item.musicResponsiveListItemRenderer)).filter(notEmpty)
+    const songIds = new Set(songList.map((track) => track.id))
     return {
-      songs: searchShelf(songs).map((item) => fromListItem(item.musicResponsiveListItemRenderer)).filter(notEmpty),
+      songs: songList,
+      videos: searchShelf(videos)
+        .map((item) => fromListItem(item.musicResponsiveListItemRenderer, {}, true))
+        .filter((track): track is Track => !!track && !songIds.has(track.id)),
       albums: cards(albums),
       artists: cards(artists),
       playlists: [...cards(featured), ...cards(community)]
         .filter((card) => card.kind === 'playlist' && !seen.has(card.id) && !!seen.add(card.id))
         .slice(0, SEARCH_PLAYLISTS),
     }
-  }, (result) => !!(result.songs.length || result.albums.length || result.artists.length || result.playlists.length))
+  }, (result) => !!(result.songs.length || result.videos.length || result.albums.length || result.artists.length || result.playlists.length))
 }
 
 /** Solo artistas (una consulta): para elegir tus gustos. */
@@ -514,36 +541,65 @@ export function ytmTimedLyrics(videoId: string): Promise<{ lines: TimedLine[]; s
  */
 export function playlistIdFrom(text: string): string | null {
   const value = text.trim()
-  const id = value.match(/[?&]list=([\w-]+)/)?.[1] ?? value.match(/\/browse\/VL([\w-]+)/)?.[1] ?? (/^(VL)?(PL|OLAK5uy_|RDCLAK)[\w-]{10,}$/.test(value) ? value : null)
+  const id =
+    value.match(/[?&]list=([\w-]+)/)?.[1] ??
+    value.match(/\/browse\/VL([\w-]+)/)?.[1] ??
+    // Pegado tal cual: PL… (de usuarios), OLAK5uy_… (álbumes), RDCLAK… (de YouTube Music), UU… (subidas de un canal).
+    (/^(VL)?(PL|OLAK5uy_|RDCLAK|UU|FL)[\w-]{10,}$/.test(value) ? value : null)
   const clean = id?.replace(/^VL/, '') ?? null
   return clean && (!clean.startsWith('RD') || clean.startsWith('RDCLAK')) ? clean : null
 }
 
-const IMPORT_MAX = 1000 // canciones como mucho al importar una playlist
+/**
+ * Listas automáticas de tu cuenta que YouTube no deja leer sin iniciar sesión (aunque el enlace se vea normal): «Tus me
+ * gusta» de YouTube Music (LM), «Videos que me gustan» (LL) y «Ver más tarde» (WL).
+ */
+export const isPrivateAutoPlaylist = (id: string) => /^(LM|LL|WL)$/.test(id)
 
-/** Una playlist COMPLETA (de a 100, siguiendo las páginas), para importarla. */
-export async function ytmPlaylist(playlistId: string): Promise<{ title: string; image?: string; tracks: Track[] }> {
+export const IMPORT_MAX = 5000 // canciones como mucho al importar una playlist
+
+/**
+ * Una playlist COMPLETA (de a 100, siguiendo las páginas), para importarla. `count`: cuántas dice YouTube Music que tiene
+ * («107 pistas»; -1 si no lo dice), para saber si faltó alguna (data/playlistImport.ts).
+ */
+export async function ytmPlaylist(playlistId: string): Promise<{ title: string; image?: string; tracks: Track[]; count: number }> {
   const json = await call('browse', { browseId: `VL${playlistId}` })
   const two = json?.contents?.twoColumnBrowseResultsRenderer
-  const first = two?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents?.[0]
-  const header = first?.musicResponsiveHeaderRenderer ?? first?.musicEditablePlaylistDetailHeaderRenderer?.header?.musicResponsiveHeaderRenderer
-  const shelf = two?.secondaryContents?.sectionListRenderer?.contents?.[0]?.musicPlaylistShelfRenderer
+  const tabContents: Json[] = (two ?? sectionHolder(json))?.tabs?.[0]?.tabRenderer?.content?.sectionListRenderer?.contents ?? []
+  const first = tabContents.find((content) => content?.musicResponsiveHeaderRenderer || content?.musicEditablePlaylistDetailHeaderRenderer)
+  const header =
+    first?.musicResponsiveHeaderRenderer ??
+    first?.musicEditablePlaylistDetailHeaderRenderer?.header?.musicResponsiveHeaderRenderer ??
+    json?.header?.musicDetailHeaderRenderer ??
+    json?.header?.musicEditablePlaylistDetailHeaderRenderer?.header?.musicDetailHeaderRenderer
+  // Las canciones suelen ir en la columna de al lado; en el formato viejo, en la misma pestaña. Se buscan en ambas.
+  const shelfContents: Json[] = [...(two?.secondaryContents?.sectionListRenderer?.contents ?? []), ...tabContents]
+  const shelf = shelfContents.map((content) => content?.musicPlaylistShelfRenderer ?? content?.musicShelfRenderer).find((found) => found?.contents)
   if (!shelf) throw new Error('No se encontró la playlist')
   const tracks: Track[] = []
-  // Las canciones de una página y, si hay más, la marca para pedir la siguiente (su último elemento).
-  const take = (items: Json[]): string | undefined => {
+  // Las canciones de una página y, si hay más, la marca para pedir la siguiente (su último elemento o, en el formato
+  // viejo, «continuations» de la lista).
+  const take = (items: Json[], continuations?: Json): string | undefined => {
     tracks.push(...items.map((item) => fromListItem(item?.musicResponsiveListItemRenderer)).filter(notEmpty))
-    return items.at(-1)?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token
+    return items.at(-1)?.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ?? continuations?.[0]?.nextContinuationData?.continuation
   }
-  let token = take(shelf.contents ?? [])
+  let token = take(shelf.contents ?? [], shelf.continuations)
   while (token && tracks.length < IMPORT_MAX) {
     const more = await call('browse', { continuation: token })
-    token = take(more?.onResponseReceivedActions?.[0]?.appendContinuationItemsAction?.continuationItems ?? [])
+    const old = more?.continuationContents?.musicPlaylistShelfContinuation ?? more?.continuationContents?.musicShelfContinuation
+    token = old
+      ? take(old.contents ?? [], old.continuations)
+      : take(more?.onResponseReceivedActions?.[0]?.appendContinuationItemsAction?.continuationItems ?? [])
   }
   const seen = new Set<string>()
+  const counts = [plain(header?.secondSubtitle), plain(header?.subtitle)].join(' • ').match(/([\d.,]+)\s+(?:pistas|canciones|videos|tracks|songs)/i)
   return {
     title: plain(header?.title) || 'Playlist',
-    image: lastThumb(header?.thumbnail?.musicThumbnailRenderer?.thumbnail),
+    image: lastThumb(header?.thumbnail?.musicThumbnailRenderer?.thumbnail ?? header?.thumbnail?.croppedSquareThumbnailRenderer?.thumbnail),
     tracks: tracks.filter((track) => !seen.has(track.id) && !!seen.add(track.id)).slice(0, IMPORT_MAX),
+    count: counts ? Number(counts[1].replace(/[.,]/g, '')) : -1,
   }
 }
+
+/** El formato de una sola columna (algunas playlists todavía lo traen). */
+const sectionHolder = (json: Json) => json?.contents?.singleColumnBrowseResultsRenderer

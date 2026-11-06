@@ -1,5 +1,5 @@
-import { ChevronLeft, Play, Shuffle, SlidersHorizontal } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { ChevronLeft, LoaderCircle, Play, Shuffle, SlidersHorizontal } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router'
 import { TrackList } from '../components/tracks/TrackList'
 import { Chips } from '../components/ui/Chips'
@@ -14,11 +14,19 @@ import { showToast } from '../ui/toast'
 
 const ALL = 'todo'
 
+/** Canciones de un modo: las que ya llegaron y si falta alguna (carga progresiva). */
+interface Loaded {
+  tracks: Track[]
+  done: boolean
+}
+
 /**
  * Modo de ambiente (Rumba, Tomar, Relax): canciones de las playlists de sus géneros (búsquedas como «salsa para
  * fiesta», ver data/genres.ts), con un subfiltro por género («Todo» los mezcla). Con «Personalizar géneros» le agregas
  * o quitas cualquier género de la app (al menos uno). Tocar una o ▶ reemplaza la cola; al acabarse la lista sigue la
  * cola infinita (la radio de la última, mismo género).
+ * Carga progresiva: en cuanto hay 5 canciones se ven y se puede dar ▶; el resto llega en segundo plano y, si ya está
+ * sonando esta lista, se suma a la cola (engine.appendToContext).
  */
 export function ModePage() {
   const { modo } = useParams()
@@ -31,25 +39,42 @@ export function ModePage() {
   const mode = useMemo(() => base && customMode(base, chosenKey.split(',')), [base, chosenKey])
   const [selected, setFilter] = useState(ALL)
   const [editing, setEditing] = useState(false)
-  const [loaded, setLoaded] = useState<Record<string, Track[] | 'error'>>({})
+  const [loaded, setLoaded] = useState<Record<string, Loaded | 'error'>>({})
+  const requested = useRef(new Set<string>()) // listas pedidas (no se cancelan al llegar las primeras canciones)
+  const mounted = useRef(true)
+  const playing = useRef<{ key: string; id: number } | null>(null) // la lista de esta página que suena (appendToContext)
   const filter = mode?.filters.some((f) => f.key === selected) ? selected : ALL // si quitaste el que se veía, «Todo»
   const key = `${modo}:${filter}:${chosenKey}`
 
   useEffect(() => {
-    if (!mode || loaded[key]) return
-    let alive = true
-    modeTracks(mode, filter === ALL ? null : filter)
-      .then((tracks) => alive && setLoaded((all) => ({ ...all, [key]: tracks.length ? tracks : 'error' })))
-      .catch(() => alive && setLoaded((all) => ({ ...all, [key]: 'error' })))
+    mounted.current = true
     return () => {
-      alive = false
+      mounted.current = false
     }
-  }, [mode, filter, key, loaded])
+  }, [])
+
+  useEffect(() => {
+    if (!mode || requested.current.has(key)) return
+    requested.current.add(key)
+    const update = (value: Loaded | 'error') => mounted.current && setLoaded((all) => ({ ...all, [key]: value }))
+    modeTracks(mode, filter === ALL ? null : filter, 50, (tracks) => update({ tracks, done: false }))
+      .then((tracks) => update(tracks.length ? { tracks, done: true } : 'error'))
+      .catch(() => update('error'))
+  }, [mode, filter, key])
+
+  // Llegaron más canciones con la lista ya sonando: van a la cola, detrás de las que había.
+  const entry = loaded[key]
+  const arrived = entry && entry !== 'error' ? entry.tracks : null
+  useEffect(() => {
+    const current = playing.current
+    if (arrived && current?.key === key) player.appendToContext(current.id, arrived)
+  }, [arrived, key])
 
   if (!base || !mode) return <Navigate to="/" replace />
   const { icon: Icon, gradient } = MODE_LOOK[mode.key]
   const list = loaded[key]
-  const tracks = Array.isArray(list) ? list : []
+  const tracks = list && list !== 'error' ? list.tracks : []
+  const loadingMore = !!list && list !== 'error' && !list.done
   const filterLabel = mode.filters.find((f) => f.key === filter)?.label
   const name = filterLabel ? `${mode.label} · ${filterLabel}` : mode.label
   const customized = chosenKey !== defaultModeGenres(base).join(',')
@@ -64,7 +89,7 @@ export function ModePage() {
   const options = { replaceQueue: true, genres: mode.genres }
   const play = (index: number) => {
     open() // primero «Sonando ahora», así el video aparece ya en su sitio
-    player.playContext(name, tracks, index, options)
+    playing.current = { key, id: player.playContext(name, tracks, index, options) }
   }
 
   return (
@@ -148,7 +173,7 @@ export function ModePage() {
           disabled={!tracks.length}
           onClick={() => {
             open()
-            player.shuffleContext(name, tracks, options)
+            playing.current = { key, id: player.shuffleContext(name, tracks, options) }
           }}
           aria-label={`Reproducir ${name} en aleatorio`}
           className="flex h-14 shrink-0 items-center gap-2 rounded-full bg-contraste/10 px-5 font-semibold text-texto transition hover:bg-contraste/15 disabled:opacity-50"
@@ -157,7 +182,7 @@ export function ModePage() {
           Aleatorio
         </button>
       </div>
-      <p className="px-4 pt-2 text-xs text-texto-sec md:px-6">{mode.key === 'rumba' ? 'Se priorizan videos musicales con más de 1 millón de reproducciones; si la API no está disponible, usamos playlists de YouTube Music. Sin covers ni artistas que sueles saltar.' : 'Sin covers, sin artistas que sueles saltar y como mucho 2 canciones por artista.'}</p>
+      <p className="px-4 pt-2 text-xs text-texto-sec md:px-6">{mode.key === 'rumba' ? 'Se priorizan videos musicales con más de 1 millón de reproducciones; si la API no está disponible, usamos playlists de YouTube Music. Sin covers, sin artistas que sueles saltar ni lo que sonó en las últimas 24 h.' : 'Sin covers, sin artistas que sueles saltar ni lo que sonó en las últimas 24 h, y como mucho 2 canciones por artista.'}</p>
 
       {list === undefined && <p className="mt-6 px-4 text-sm text-texto-sec md:px-6">Armando la lista…</p>}
       {list === 'error' && <p className="mt-6 px-4 text-sm text-texto-sec md:px-6">No se pudo armar la lista. Revisa tu conexión y vuelve a intentarlo.</p>}
@@ -165,6 +190,12 @@ export function ModePage() {
         <div className="mt-3">
           <TrackList key={key} tracks={tracks} numbered={false} onPlay={play} />
         </div>
+      )}
+      {loadingMore && (
+        <p className="mt-2 flex items-center gap-2 px-4 text-sm text-texto-sec md:px-6">
+          <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+          Cargando más canciones…
+        </p>
       )}
     </div>
   )

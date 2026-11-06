@@ -1,5 +1,13 @@
 # Historial de cambios
 
+## 2026-11-06 — v1.9.0
+
+- Buscar sin filtro de popularidad: además de «Canciones» trae «Videos» de YouTube Music y, en la app de Android, la búsqueda normal de YouTube con NewPipe (cualquier video, aunque tenga pocas vistas). Cada resultado sabe sus vistas; el chip «Solo populares» (apagado por defecto) deja solo lo que pasa de 1 millón.
+- Importar playlist: cualquier playlist pública o no listada de YouTube o YouTube Music, de cualquier usuario. Se lee de YouTube Music y, en Android, también con NewPipe (gana la que trae más canciones; los datos de YouTube Music se conservan). Hasta 5000 canciones (antes 1000). Lee también el formato viejo de las páginas. «Tus me gusta» (LM), «Videos que me gustan» (LL) y «Ver más tarde» (WL) avisan que son privadas. También para «Playlists guardadas».
+- Modos (Rumba y los demás): carga progresiva. Con las primeras 5 canciones ya se puede dar ▶; el resto llega en segundo plano («Cargando más canciones…») y, si la lista ya suena, se suma a la cola (antes de lo de la Fila Dinámica; con aleatorio, en lugares al azar).
+- Modo offline: la app guarda en el teléfono el audio de hasta 15 canciones de «Selecciones rápidas» (unos 50 MB; cada una dura al menos 24 h; con Wi-Fi las de más de 24 h se cambian por nuevas, con datos móviles solo se completa lo que falte). Sin internet (o si NewPipe falla 10 seguidas), en vez de pausar suenan una tras otra, en bucle, y la cola espera en la canción y el segundo donde iba. Al volver la conexión (se prueba cada 20 s y al aparecer una red) deja la caché y sigue la cola. Ajustes → «Modo sin conexión»: cuántas hay y «Limpiar caché offline».
+- Anti-repetición: lo que sonó en las últimas 24 h (historial de escucha) no entra en la radio, «Recomendadas», la Fila Dinámica, «Selecciones rápidas» ni los Modos. Solo como último recurso, para que la música no se detenga. La cola automática del reproductor nativo también recuerda 24 h (aunque se cierre la app).
+
 ## 2026-10-25
 
 - Playlists guardadas (rama `feat/playlists-guardadas`, pedido por el dueño):

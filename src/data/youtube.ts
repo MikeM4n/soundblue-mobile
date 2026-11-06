@@ -141,7 +141,8 @@ function writeCache(query: string, results: YouTubeResults) {
 
 /** Busca canciones: primero las pistas de YouTube Music, después los videos musicales. */
 export async function youtubeSearch(query: string): Promise<YouTubeResults> {
-  const cacheKey = query.trim().toLowerCase().replace(/\s+/g, ' ')
+  // v2: con las vistas de cada video (para «Solo populares» en Buscar).
+  const cacheKey = `v2:${query.trim().toLowerCase().replace(/\s+/g, ' ')}`
   const cached = readCache()[cacheKey]
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.results
 
@@ -154,6 +155,7 @@ export async function youtubeSearch(query: string): Promise<YouTubeResults> {
       duration: video.duration || undefined,
       artwork: video.artwork || undefined,
       ytMusic: video.ytMusic,
+      viewCount: video.viewCount !== undefined && video.viewCount >= 0 ? video.viewCount : undefined,
     }))
     const results = {
       songs: tracks.filter((track) => track.ytMusic),

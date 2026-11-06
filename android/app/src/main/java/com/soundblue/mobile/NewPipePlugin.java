@@ -8,13 +8,19 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import org.schabi.newpipe.extractor.InfoItem;
+import org.schabi.newpipe.extractor.ListExtractor;
 import org.schabi.newpipe.extractor.ServiceList;
+import org.schabi.newpipe.extractor.playlist.PlaylistExtractor;
 import org.schabi.newpipe.extractor.search.SearchExtractor;
 import org.schabi.newpipe.extractor.stream.StreamInfoItem;
+import org.schabi.newpipe.extractor.stream.StreamType;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static com.soundblue.mobile.StreamResolver.firstImage;
@@ -23,7 +29,12 @@ import static com.soundblue.mobile.StreamResolver.safe;
 @CapacitorPlugin(name = "NewPipe")
 public final class NewPipePlugin extends Plugin {
     private static final ExecutorService WORKER = Executors.newFixedThreadPool(2);
+    private static final Pattern VIDEO_IN_URL = Pattern.compile("(?:v=|youtu\\.be/)([A-Za-z0-9_-]{11})");
+    private static final Pattern PLAYLIST_ID = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
+    private static final int SEARCH_RESULTS = 30;
+    private static final int PLAYLIST_MAX = 5000; // canciones como mucho al importar una playlist
 
+    /** Búsqueda normal de YouTube (cualquier video, sin importar sus vistas), con las vistas de cada uno. */
     @PluginMethod
     public void searchVideos(final PluginCall call) {
         final String query = call.getString("query", "").trim();
@@ -40,19 +51,12 @@ public final class NewPipePlugin extends Plugin {
                 for (final InfoItem item : items) {
                     if (!(item instanceof StreamInfoItem)) continue;
                     final StreamInfoItem video = (StreamInfoItem) item;
-                    final String videoId = videoIdFromUrl(video.getUrl());
-                    if (videoId == null) continue;
-
-                    final String uploader = safe(video.getUploaderName(), "YouTube");
-                    final JSObject result = new JSObject();
-                    result.put("id", videoId);
-                    result.put("title", video.getName());
-                    result.put("artist", uploader.replaceFirst(" - Topic$", ""));
-                    result.put("ytMusic", uploader.endsWith(" - Topic"));
-                    result.put("duration", video.getDuration() > 0 ? video.getDuration() : 0);
-                    result.put("artwork", firstImage(video.getThumbnails()));
+                    final StreamType type = video.getStreamType();
+                    if (type == StreamType.LIVE_STREAM || type == StreamType.AUDIO_LIVE_STREAM) continue; // directos
+                    final JSObject result = videoJson(video);
+                    if (result == null) continue;
                     results.put(result);
-                    if (results.length() >= 30) break;
+                    if (results.length() >= SEARCH_RESULTS) break;
                 }
 
                 final JSObject response = new JSObject();
@@ -60,6 +64,56 @@ public final class NewPipePlugin extends Plugin {
                 call.resolve(response);
             } catch (final Exception error) {
                 call.reject("NewPipe no pudo buscar en YouTube: " + safe(error.getMessage(), "error de extracción"), error);
+            }
+        });
+    }
+
+    /**
+     * Una playlist pública (o no listada) de YouTube COMPLETA, de cualquier usuario: sigue sus páginas hasta `max`
+     * canciones (como mucho 5000). Respaldo de la lectura por YouTube Music al importar (src/data/playlistImport.ts).
+     */
+    @PluginMethod
+    public void getPlaylist(final PluginCall call) {
+        final String id = call.getString("id", "").trim();
+        final int max = Math.max(1, Math.min(call.getInt("max", PLAYLIST_MAX), PLAYLIST_MAX));
+        if (!PLAYLIST_ID.matcher(id).matches()) {
+            call.reject("El identificador de la playlist no es válido.");
+            return;
+        }
+
+        WORKER.execute(() -> {
+            try {
+                final PlaylistExtractor extractor =
+                        ServiceList.YouTube.getPlaylistExtractor("https://www.youtube.com/playlist?list=" + id);
+                extractor.fetchPage();
+                final JSArray tracks = new JSArray();
+                final Set<String> seen = new HashSet<>();
+                ListExtractor.InfoItemsPage<StreamInfoItem> page = extractor.getInitialPage();
+                while (true) {
+                    for (final StreamInfoItem video : page.getItems()) {
+                        final JSObject track = videoJson(video);
+                        if (track == null || !seen.add(track.getString("id"))) continue;
+                        tracks.put(track);
+                        if (tracks.length() >= max) break;
+                    }
+                    if (tracks.length() >= max || !page.hasNextPage()) break;
+                    page = extractor.getPage(page.getNextPage());
+                }
+
+                final JSObject response = new JSObject();
+                response.put("title", safe(extractor.getName(), "Playlist"));
+                response.put("image", firstImage(extractor.getThumbnails()));
+                long count = -1;
+                try {
+                    count = extractor.getStreamCount();
+                } catch (final Exception ignored) {
+                    // algunas no lo dicen
+                }
+                response.put("count", count);
+                response.put("tracks", tracks);
+                call.resolve(response);
+            } catch (final Exception error) {
+                call.reject("NewPipe no pudo leer la playlist: " + safe(error.getMessage(), "error de extracción"), error);
             }
         });
     }
@@ -89,10 +143,26 @@ public final class NewPipePlugin extends Plugin {
         });
     }
 
+    /** Un video para la app: id, título, artista (el canal, sin « - Topic»), duración, carátula y vistas (-1: no se sabe). */
+    private static JSObject videoJson(final StreamInfoItem video) {
+        final String videoId = videoIdFromUrl(video.getUrl());
+        final String title = safe(video.getName(), "");
+        if (videoId == null || title.isEmpty()) return null;
+        final String uploader = safe(video.getUploaderName(), "YouTube");
+        final JSObject result = new JSObject();
+        result.put("id", videoId);
+        result.put("title", title);
+        result.put("artist", uploader.replaceFirst(" - Topic$", ""));
+        result.put("ytMusic", uploader.endsWith(" - Topic"));
+        result.put("duration", video.getDuration() > 0 ? video.getDuration() : 0);
+        result.put("artwork", firstImage(video.getThumbnails()));
+        result.put("viewCount", video.getViewCount());
+        return result;
+    }
+
     private static String videoIdFromUrl(final String url) {
         if (url == null) return null;
-        final java.util.regex.Matcher matcher = Pattern.compile("(?:v=|youtu\\.be/)([A-Za-z0-9_-]{11})")
-                .matcher(url);
+        final Matcher matcher = VIDEO_IN_URL.matcher(url);
         return matcher.find() ? matcher.group(1) : null;
     }
 }

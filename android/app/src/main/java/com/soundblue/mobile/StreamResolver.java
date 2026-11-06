@@ -126,6 +126,19 @@ final class StreamResolver {
         return request(videoId).thenApply((stream) -> stream.related);
     }
 
+    /**
+     * ¿Ya se puede extraer este video? En modo offline (PlaybackService) dice si volvió internet: si la canción que
+     * esperaba se deja extraer, la cola de antes puede seguir. Un fallo no se guarda (request): cada prueba es nueva.
+     */
+    static CompletableFuture<Stream> probe(String videoId) {
+        if (videoId == null || !VIDEO_ID.matcher(videoId).matches()) {
+            final CompletableFuture<Stream> invalid = new CompletableFuture<>();
+            invalid.completeExceptionally(new UnavailableException("El identificador del video de YouTube no es válido.", null));
+            return invalid;
+        }
+        return request(videoId);
+    }
+
     /** La URL guardada dejó de servir (p. ej. venció): la próxima vez se extrae otra. */
     static void forget(String videoId) {
         STREAMS.remove(videoId);

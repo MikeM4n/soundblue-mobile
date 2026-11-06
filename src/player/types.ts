@@ -47,8 +47,17 @@ export interface PlaybackFailure {
   skipped: boolean // el reproductor nativo ya pasó a la siguiente
 }
 
+/** Modo offline: lo que suena de la caché del teléfono mientras la cola espera a que vuelva internet. */
+export interface OfflinePlayback {
+  track: Track
+  state: BackendState
+  duration: number // segundos (0 si aún no se sabe)
+}
+
 export interface BackendEvents {
   onState(state: BackendState): void
+  /** Suena la caché offline (`info`) o terminó el modo offline (null): la cola sigue donde iba. */
+  onOffline(info: OfflinePlayback | null): void
   /** `after`: la canción es de las que el reproductor nativo agregó solo, después de `after` (la última que le mandó la app). */
   onTrack(id: string, reason: TrackChange, state: BackendState, after?: string): void
   onFailed(failure: PlaybackFailure): void
@@ -66,6 +75,7 @@ export interface MediaBackend {
   pause(): void
   seek(seconds: number): void
   previous(): void // «anterior» con la regla de los 3 s, medida por el propio reproductor
+  next(): void // solo en modo offline: la siguiente de la caché (fuera de él, «siguiente» lo decide el motor)
   getTime(): number
   getDuration(): number
   setVolume(volume: number, muted: boolean): void

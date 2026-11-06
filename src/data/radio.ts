@@ -25,7 +25,9 @@
 // Filtros: solo audio o video oficial (fuera los subidos por usuarios: covers); fuera los «Canción – Otro Artista» de
 // un intérprete distinto (covers); nada que comparta más del 40 % de las palabras del título de la semilla (covers,
 // remix, en vivo); una sola versión de cada título (la más vieja, que suele ser la original); de otro género (ver
-// arriba); fuera los artistas que sueles saltar (data/history.ts). Mezcla: en cada tanda, como mucho 1 de cada 5 del
+// arriba); fuera los artistas que sueles saltar (data/history.ts); fuera lo que ya sonó en las últimas 24 h (data/history.ts:
+// anti-repetición; esas quedan de reserva y solo se usan si la radio ya no tiene ninguna otra, para que la música no se
+// detenga). Mezcla: en cada tanda, como mucho 1 de cada 5 del
 // mismo artista (el 80 % de otros artistas) y como mucho 2 de cualquier otro artista. Orden al azar con una semilla
 // por sesión. Nunca la misma canción dos veces, ni una que ya esté en la cola (`exclude`).
 import { logDuplicate } from '../lib/duplicateLog'
@@ -44,6 +46,7 @@ const BLOCK = 5 // después, bloques de 5: «Nuevas para ti» y recomendadas, al
 const INDEX_WAIT_MS = 2500 // la primera vez el índice de géneros tarda en armarse: la radio no lo espera más que esto
 const TITLE_OVERLAP = 0.4
 const MAX_REFILLS = 6 // radios de respaldo como mucho
+const RECENT_MS = 24 * 3600 * 1000 // anti-repetición: lo que sonó en las últimas 24 h no se recomienda
 const OFFICIAL = new Set(['MUSIC_VIDEO_TYPE_ATV', 'MUSIC_VIDEO_TYPE_OMV', 'MUSIC_VIDEO_TYPE_OFFICIAL_SOURCE_MUSIC'])
 const LOG_KEY = 'soundblue:radio-diagnostico'
 const STOPWORDS = new Set(
@@ -138,6 +141,8 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
   const served = new Set([seed.id])
   const skipped = listening.skippedArtists()
   const heard = new Set(listening.entries().map((entry) => entry.track.id)) // lo que ya sonó aquí alguna vez
+  const recent = listening.playedWithin(RECENT_MS) // lo que sonó hoy o ayer (últimas 24 h)
+  const reserve: Candidate[] = [] // las de las últimas 24 h que pasaron los demás filtros: solo si no queda otra
   const seedLabel = `${seed.title} · ${seed.artist}`
   let given = 0 // cuántas dio ya: dice a qué bloque va la siguiente
   const titles = new Set([baseTitle(seed.title)])
@@ -158,6 +163,7 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
     'de otro género': 0,
     'artista que el índice no conoce (popular, ranchera o vallenato)': 0,
     'artista que sueles saltar': 0,
+    'escuchada en las últimas 24 h': 0,
   }
   const knownArtists = new Set([seedArtist]) // los artistas que aparecen en las radios (para reconocer covers)
   // Género: lo que acepta la radio (el de la semilla y los parecidos). Sin índice o semilla desconocida: no se filtra.
@@ -221,7 +227,13 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
       else {
         titles.add(base)
         served.add(track.id) // ya no puede volver a entrar (está en la tanda)
-        accepted.push({ track, year: item.year, reason: artistKey(track.artist) === seedArtist ? 'mismo artista' : reason })
+        const candidate: Candidate = { track, year: item.year, reason: artistKey(track.artist) === seedArtist ? 'mismo artista' : reason }
+        if (recent.has(track.id)) {
+          filtered['escuchada en las últimas 24 h']++
+          reserve.push(candidate)
+        } else {
+          accepted.push(candidate)
+        }
       }
     }
     for (const candidate of shuffle(accepted, random)) (candidate.reason === 'mismo artista' ? same : others).push(candidate)
@@ -244,7 +256,7 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
 
   /** Las que esperan turno pasan otra vez por el filtro de género (el índice llegó después de armarse la radio). */
   const refilter = () => {
-    for (const pool of [same, others]) {
+    for (const pool of [same, others, reserve]) {
       for (let i = pool.length - 1; i >= 0; i--) {
         const miss = genreMiss(pool[i].track)
         if (!miss) continue
@@ -332,6 +344,9 @@ export function createRadio(seed: Track, { artistTop = true, diagnostics: logDia
       pick ??= take(same, wantNew)
       // Ya no quedan nuevas: una recomendada (salvo que se pidieran solo nuevas, para «Por Descubrir»).
       if (!pick && wantNew && !kind) pick = take(others, false) ?? take(same, false)
+      // Último recurso (la radio ya no tiene nada más): una de las últimas 24 h, antes que dejar la cola sin música.
+      // Nunca para «Por Descubrir» (esas ya sonaron, así que no son nuevas).
+      if (!pick && kind !== 'nuevas') pick = take(reserve, false)
       if (!pick) break
       if (pick.reason !== 'mismo artista') lastOther = pick.track
       batch.push({ candidate: pick, kind: wantNew && !heard.has(pick.track.id) ? 'nuevas' : 'recomendadas' })

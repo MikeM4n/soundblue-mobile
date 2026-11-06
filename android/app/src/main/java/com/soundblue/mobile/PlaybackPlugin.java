@@ -135,6 +135,15 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         });
     }
 
+    /** ⏭ en modo offline: la siguiente de la caché. */
+    @PluginMethod
+    public void next(final PluginCall call) {
+        withService(call, (service) -> {
+            service.next();
+            call.resolve();
+        });
+    }
+
     @PluginMethod
     public void setVolume(final PluginCall call) {
         final float volume = call.getFloat("volume", 1f);
@@ -194,6 +203,16 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
     @Override
     public void onStateChanged() {
         notifyListeners("state", state());
+    }
+
+    /** Sin el estado: al terminar, el reproductor todavía tiene la caché; lo que suena después llega por «state». */
+    @Override
+    public void onOfflineChanged(boolean active) {
+        final PlaybackService service = PlaybackService.get();
+        final JSObject data = new JSObject();
+        data.put("active", active);
+        data.put("seq", service == null ? 0 : service.getGeneration());
+        notifyListeners("offline", data);
     }
 
     @Override
@@ -280,6 +299,8 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
         data.put("position", player.getCurrentPosition() / 1000.0);
         data.put("duration", duration == C.TIME_UNSET ? 0 : duration / 1000.0);
         data.put("seq", service.getGeneration());
+        // Modo offline: lo que suena es de la caché, no de la cola de la app (la app lo muestra aparte).
+        data.put("offline", service.isOffline());
         if (item != null) {
             // Por si la app se abre con la música ya sonando (la arrancó el widget): sabe qué canción es.
             final MediaMetadata metadata = item.mediaMetadata;

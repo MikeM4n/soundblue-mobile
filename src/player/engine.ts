@@ -9,8 +9,9 @@ import { logDuplicate } from '../lib/duplicateLog'
 import { settings } from '../lib/settings'
 import { showToast } from '../ui/toast'
 import { setupMediaSession, updateMetadata, updatePlaybackState, updatePosition } from './mediaSession'
-import { isTrack, type BackendState, type MediaBackend, type Neighbors, type PlaybackFailure, type Repeat, type Status, type Track, type TrackChange } from './types'
+import { isTrack, type BackendState, type MediaBackend, type Neighbors, type OfflinePlayback, type PlaybackFailure, type Repeat, type Status, type Track, type TrackChange } from './types'
 import { NativePlayerBackend } from './nativePlayer'
+import { offlineCache } from './offlineCache'
 
 const SESSION_KEY = 'soundblue:reproductor'
 const DURATIONS_KEY = 'soundblue:duraciones'
@@ -37,6 +38,8 @@ export interface PlayerSnapshot {
   muted: boolean
   error: string | null
   durations: Readonly<Record<string, number>>
+  // Modo offline (sin internet): `current` es la canción de la caché que suena; la cola espera donde iba.
+  offline: boolean
 }
 
 // 'lista': no sonaba nada, así que quedó como canción actual, en pausa (los gestos no reproducen solos).
@@ -83,9 +86,22 @@ const CLOCK_MS = 250 // la barra de progreso y la letra se actualizan 4 veces po
 const SPINNER_DELAY_MS = 150 // ▶ sobre una canción ya cargada: si no suena en este tiempo, sale la rueda de carga
 
 const OFFLINE = 'Sin conexión: la música sigue en cuanto vuelva internet.'
+const OFFLINE_SOON = 'Sin conexión: si se corta, suenan tus canciones guardadas hasta que vuelva internet.'
+const OFFLINE_MODE = 'Modo offline: canción guardada en el teléfono. Tu cola sigue al volver internet.'
 const SKIPPED = 'No se pudo reproducir esta canción, pasando a la siguiente'
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n))
+
+/** Estado del reproductor nativo → el de la app (para lo que suena de la caché offline). */
+const STATUS_OF: Record<BackendState, Status> = {
+  unstarted: 'loading',
+  cued: 'paused',
+  playing: 'playing',
+  paused: 'paused',
+  buffering: 'buffering',
+  ended: 'ended',
+  error: 'error',
+}
 const range = (n: number) => Array.from({ length: n }, (_, i) => i)
 
 function shuffled<T>(list: T[]): T[] {
@@ -139,6 +155,8 @@ export class PlayerEngine {
   private discarded = new Set<string>() // descartadas en las pestañas: esta radio no las vuelve a dar
   private resumeWhenOnline = false // falló por falta de internet: al volver la conexión, suena sola
   private playingWhenOffline = false // sonaba cuando se fue internet
+  private offline: OfflinePlayback | null = null // modo offline: lo que suena de la caché (la cola espera)
+  private contextId = 0 // sube con cada lista que se pone a sonar (appendToContext)
   private lastSave = 0
   private listeners = new Set<() => void>()
   private snapshot: PlayerSnapshot
@@ -149,6 +167,7 @@ export class PlayerEngine {
   constructor() {
     this.audio = new NativePlayerBackend({
       onState: (state) => this.current && this.onBackendState(state),
+      onOffline: (info) => this.onOfflineMode(info),
       onTrack: (id, reason, state, after) => this.onNativeTrack(id, reason, state, after),
       onFailed: (failure) => this.onNativeFailure(failure),
       onAttach: (id, state) => this.onNativeAttach(id, state),
@@ -197,7 +216,7 @@ export class PlayerEngine {
   getTimeSnapshot = () => this.clockTime
 
   private updateClock() {
-    const run = this.clockListeners.size > 0 && this.status === 'playing'
+    const run = this.clockListeners.size > 0 && this.shownStatus() === 'playing'
     if (run && this.clock === undefined) this.clock = window.setInterval(() => this.tickClock(), CLOCK_MS)
     if (!run && this.clock !== undefined) {
       window.clearInterval(this.clock)
@@ -207,7 +226,7 @@ export class PlayerEngine {
   }
 
   private tickClock() {
-    const time = this.current ? this.currentTime() : 0
+    const time = this.offline ? this.audio.offlineTime() : this.current ? this.currentTime() : 0
     if (time === this.clockTime) return
     this.clockTime = time
     this.clockListeners.forEach((listener) => listener())
@@ -220,8 +239,35 @@ export class PlayerEngine {
    * `replaceQueue` (Inicio: lo que tocas reemplaza la cola). Sin repetidas (mismo videoId): cada canción de la lista
    * va una sola vez y no entra la que ya esté en tu cola; la que tocaste sale de tu cola porque suena ya.
    */
-  playContext(name: string, tracks: readonly Track[], start = 0, options: PlayOptions = {}) {
-    this.startContext(name, tracks, start, options, null)
+  playContext(name: string, tracks: readonly Track[], start = 0, options: PlayOptions = {}): number {
+    return this.startContext(name, tracks, start, options, null) ? this.contextId : 0
+  }
+
+  /**
+   * Una lista que se sigue cargando (Modo Rumba: suenan las primeras y el resto llega en segundo plano): las que faltan
+   * se suman a la lista que suena, antes de lo que agregó la Fila Dinámica (con aleatorio, en lugares al azar, nunca en
+   * lugar de la siguiente, que ya está pre-cargada). Solo si sigue sonando esa lista (`id`, el que dio playContext). Sin
+   * repetidas: lo que ya está en la lista o en tu cola (o quitaste de ella) no vuelve. Devuelve cuántas entraron.
+   */
+  appendToContext(id: number, tracks: readonly Track[]): number {
+    const context = this.context
+    if (!context || !id || id !== this.contextId) return 0
+    const have = new Set([...context.tracks.map((track) => track.id), ...this.queue.map((track) => track.id)])
+    if (this.current) have.add(this.current.id)
+    const fresh = tracks.filter((track) => !have.has(track.id) && !!have.add(track.id))
+    if (!fresh.length) return 0
+    const start = context.tracks.length
+    context.tracks.push(...fresh)
+    const added = fresh.map((_, i) => start + i)
+    const groups = context.groups ?? {}
+    const upcoming = this.order.slice(this.pos + 1)
+    const own = upcoming.filter((i) => !groups[context.tracks[i].id])
+    const radio = upcoming.filter((i) => groups[context.tracks[i].id])
+    if (this.shuffle) for (const index of shuffled(added)) own.splice(1 + Math.floor(Math.random() * own.length), 0, index)
+    else own.push(...added)
+    this.order = [...this.order.slice(0, this.pos + 1), ...own, ...radio]
+    this.changed()
+    return fresh.length
   }
 
   /**
@@ -234,8 +280,8 @@ export class PlayerEngine {
   }
 
   // `radio`: la lista es una radio; se pone antes de sonar para que las pestañas las llene ella y no una nueva.
-  private startContext(name: string, tracks: readonly Track[], start: number, { replaceQueue = false, genres }: PlayOptions, radio: RadioSource | null) {
-    if (!tracks.length) return
+  private startContext(name: string, tracks: readonly Track[], start: number, { replaceQueue = false, genres }: PlayOptions, radio: RadioSource | null): boolean {
+    if (!tracks.length) return false
     const chosen = tracks[clamp(start, 0, tracks.length - 1)]
     if (radio) this.startRecommendations(chosen, radio)
     else this.stopRecommendations() // al sonar, extendRadio arma la radio de la elegida
@@ -253,6 +299,7 @@ export class PlayerEngine {
     })
     const first = list.findIndex((track) => track.id === chosen.id)
     this.context = { name, tracks: list, genres: genres?.length ? [...genres] : undefined }
+    this.contextId++
     this.history = [] // «anterior» se mueve dentro de la nueva lista
     if (this.shuffle) {
       this.order = [first, ...shuffled(range(list.length).filter((i) => i !== first))]
@@ -262,6 +309,7 @@ export class PlayerEngine {
       this.pos = first
     }
     this.playTrack(this.contextTrack(this.pos), false)
+    return true
   }
 
   /**
@@ -468,20 +516,27 @@ export class PlayerEngine {
     this.jumpToQueue(0)
   }
 
-  /** Activa aleatorio y reproduce la lista empezando por una canción al azar. */
-  shuffleContext(name: string, tracks: readonly Track[], options: PlayOptions = {}) {
+  /** Activa aleatorio y reproduce la lista empezando por una canción al azar. Devuelve su id (appendToContext). */
+  shuffleContext(name: string, tracks: readonly Track[], options: PlayOptions = {}): number {
     this.shuffle = true
-    this.playContext(name, tracks, Math.floor(Math.random() * tracks.length), options)
+    return this.playContext(name, tracks, Math.floor(Math.random() * tracks.length), options)
   }
 
   // ---- Controles ----
   // Mientras carga, el botón muestra la rueda: tocarlo pausa (como en Spotify).
   toggle() {
+    if (this.offline) {
+      const state = this.offline.state
+      if (state === 'playing' || state === 'buffering') this.backend.pause()
+      else this.backend.play()
+      return
+    }
     if (this.status === 'playing' || this.status === 'loading' || this.status === 'buffering') this.pause()
     else this.play()
   }
 
   play() {
+    if (this.offline) return this.backend.play()
     const track = this.current
     if (!track) return
     if (this.loadedId !== track.id || this.status === 'error') {
@@ -503,6 +558,7 @@ export class PlayerEngine {
   }
 
   pause() {
+    if (this.offline) return this.backend.pause()
     this.userPaused = true
     this.backend.pause()
   }
@@ -512,6 +568,10 @@ export class PlayerEngine {
    * Se salta las que ya se sabe que solo suenan en la app de YouTube Music (sin esperar el error del reproductor).
    */
   next(): boolean {
+    if (this.offline) {
+      this.backend.next() // la siguiente de la caché; la cola sigue esperando donde iba
+      return true
+    }
     this.noteSkip()
     const before = { pos: this.pos, queue: this.queue }
     let target = this.peekNext()
@@ -538,6 +598,10 @@ export class PlayerEngine {
 
   /** Vuelve directamente a la canción que sonó antes (deslizar la barra a la derecha). False si no hay. */
   previous(): boolean {
+    if (this.offline) {
+      this.backend.previous()
+      return true
+    }
     const target = this.peekPrevious()
     if (!target) return false
     if (target.fromHistory) this.history.pop()
@@ -551,6 +615,7 @@ export class PlayerEngine {
   // canción cargada lo decide el reproductor nativo con su propio reloj (el de aquí se congela en segundo plano) y el
   // cambio vuelve por onNativeTrack, igual que desde la notificación, los audífonos o el reloj.
   prev() {
+    if (this.offline) return this.backend.previous()
     if (!this.current) return
     if (this.loadedId === this.current.id && this.status !== 'error') {
       this.backend.previous()
@@ -560,6 +625,11 @@ export class PlayerEngine {
   }
 
   seek(seconds: number) {
+    if (this.offline) {
+      this.audio.seekOffline(seconds) // la canción de la caché; la de la cola sigue en su segundo
+      this.tickClock()
+      return
+    }
     const track = this.current
     if (!track) return
     const d = this.duration
@@ -570,7 +640,7 @@ export class PlayerEngine {
   }
 
   seekBy(delta: number) {
-    this.seek(this.currentTime() + delta)
+    this.seek((this.offline ? this.audio.offlineTime() : this.currentTime()) + delta)
   }
 
   // ---- Tu cola («Siguiente en la cola») ----
@@ -798,6 +868,7 @@ export class PlayerEngine {
   private loadCurrent(autoplay: boolean, start = 0) {
     const track = this.current
     if (!track) return
+    this.offline = null // elegiste otra (o se vuelve a cargar esta): el reproductor nativo deja la caché
     this.status = autoplay ? 'loading' : 'paused'
     this.userPaused = false
     this.error = null
@@ -1051,11 +1122,46 @@ export class PlayerEngine {
 
   private onOffline() {
     this.playingWhenOffline = this.status === 'playing' || this.status === 'buffering' || this.status === 'loading'
-    if (this.current) showToast(OFFLINE)
+    if (this.current && !this.offline) showToast(offlineCache.get().count ? OFFLINE_SOON : OFFLINE)
+  }
+
+  /**
+   * Modo offline del reproductor nativo (PlaybackService): sin internet suenan, una tras otra, las canciones guardadas de
+   * «Selecciones rápidas» y la cola espera en la canción y el segundo donde iba. «Sonando ahora» muestra la de la caché.
+   * Al volver la conexión el nativo vuelve solo a la cola (`info` = null): se le manda otra vez (pudo cambiar) y la radio
+   * repone lo que falte.
+   */
+  private onOfflineMode(info: OfflinePlayback | null) {
+    if (info) {
+      if (!this.offline) {
+        this.stopTicker() // la canción de la cola no suma tiempo ni reproducciones mientras suena la caché
+        this.resumeWhenOnline = false
+        this.error = null
+        if (this.status !== 'idle' && this.status !== 'standby') this.status = 'paused'
+        showToast('Sin internet: suenan tus canciones guardadas hasta que vuelva la conexión')
+      }
+      if (this.offline?.track.id !== info.track.id) listening.started(info.track) // también cuenta para no repetirla en 24 h
+      this.offline = info
+      this.emit()
+      return
+    }
+    if (!this.offline) return
+    this.offline = null
+    showToast('Volvió la conexión: sigue tu cola donde iba')
+    this.audio.resend()
+    this.syncNative()
+    this.continuedFrom = null
+    void this.extendRadio()
+    this.emit()
   }
 
   /** Volvió internet: sigue la canción donde iba (si sonaba o quedó esperando) y la radio repone lo que falte. */
   private onOnline() {
+    if (this.offline) {
+      // Suena la caché: el reproductor nativo vuelve a la cola en cuanto la canción se deje extraer (probeOnline).
+      this.continuedFrom = null
+      return
+    }
     const resume = this.resumeWhenOnline || (this.playingWhenOffline && !this.userPaused && this.status !== 'playing')
     this.resumeWhenOnline = this.playingWhenOffline = false
     if (this.current && resume) {
@@ -1217,6 +1323,11 @@ export class PlayerEngine {
     this.save()
   }
 
+  /** Lo que muestra el botón ▶/⏸: en modo offline, el de la canción de la caché. */
+  private shownStatus(): Status {
+    return this.offline ? STATUS_OF[this.offline.state] : this.status
+  }
+
   private emit() {
     this.snapshot = this.buildSnapshot()
     this.listeners.forEach((listener) => listener())
@@ -1224,11 +1335,13 @@ export class PlayerEngine {
   }
 
   private buildSnapshot(): PlayerSnapshot {
+    const offline = this.offline
     return {
-      current: this.current,
+      current: offline?.track ?? this.current,
       fromQueue: this.fromQueue,
-      nextTrack: this.peekNext()?.track ?? null,
-      prevTrack: this.current ? (this.peekPrevious()?.track ?? null) : null,
+      // En modo offline ⏮ ⏭ van por la caché (el carrusel de la barra no muestra la cola).
+      nextTrack: offline ? null : (this.peekNext()?.track ?? null),
+      prevTrack: offline || !this.current ? null : (this.peekPrevious()?.track ?? null),
       contextName: this.context?.name ?? null,
       queue: [...this.queue],
       upcoming: this.upcomingIndexes().map((i) => this.context!.tracks[i]),
@@ -1237,15 +1350,16 @@ export class PlayerEngine {
       discover: [...this.pools.nuevas],
       recsSeed: this.poolSeed,
       recsLoading: this.poolsLoading !== null,
-      status: this.status,
-      time: this.time,
-      duration: this.duration,
+      status: this.shownStatus(),
+      time: offline ? this.audio.offlineTime() : this.time,
+      duration: offline ? offline.duration : this.duration,
       shuffle: this.shuffle,
       repeat: this.repeat,
       volume: this.volume,
       muted: this.muted,
-      error: this.error,
+      error: offline ? OFFLINE_MODE : this.error,
       durations: this.durations,
+      offline: !!offline,
     }
   }
 }

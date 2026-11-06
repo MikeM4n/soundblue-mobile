@@ -1,7 +1,8 @@
 import { Download, LoaderCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { playlistIdFrom, ytmPlaylist } from '../../data/ytmusic'
+import { importPlaylist } from '../../data/playlistImport'
+import { IMPORT_MAX, isPrivateAutoPlaylist, playlistIdFrom } from '../../data/ytmusic'
 import { library } from '../../library/store'
 import { coverSources, type Track } from '../../player/types'
 import { onlyInYouTubeMusic } from '../../player/unavailable'
@@ -10,6 +11,8 @@ import { Cover } from '../ui/Cover'
 import { IconButton } from '../ui/IconButton'
 
 type Found = { title: string; image?: string; tracks: Track[] }
+
+const PREVIEW = 200 // filas que se dibujan en la vista previa
 
 /** «Importar playlist»: en «Tu biblioteca» y en «Tus me gusta». */
 export function ImportButton({ onClick }: { onClick: () => void }) {
@@ -23,8 +26,9 @@ export function ImportButton({ onClick }: { onClick: () => void }) {
 
 /**
  * «Importar playlist» (solo YouTube y YouTube Music): pegas el enlace, se ve qué canciones trae y «Agregar todas a Me
- * gusta». Las lee de YouTube Music por el mismo intermediario que el catálogo (sin cuota ni clave; hasta 1000). Las que
- * ya se sabe que no suenan aquí no se agregan. Una playlist privada no se puede leer.
+ * gusta». Sirve cualquier playlist pública o no listada, de cualquier usuario: se lee de YouTube Music y, en Android,
+ * también con NewPipe (data/playlistImport.ts), hasta 5000 canciones. Las que ya se sabe que no suenan aquí no se
+ * agregan. Una playlist privada no se puede leer.
  */
 export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
   const [link, setLink] = useState('')
@@ -44,13 +48,17 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
       setState({ error: 'Pega el enlace de una playlist de YouTube o YouTube Music (el que lleva «list=…»). Las mezclas automáticas («Mix») no se pueden importar.' })
       return
     }
+    if (isPrivateAutoPlaylist(id)) {
+      setState({ error: 'Esa lista es privada de tu cuenta («Tus me gusta», «Ver más tarde»): YouTube no deja leerla. Crea una playlist pública o no listada con esas canciones y pega su enlace.' })
+      return
+    }
     setState({ loading: true })
     try {
-      const found = await ytmPlaylist(id)
+      const found = await importPlaylist(id)
       const tracks = found.tracks.filter((track) => !onlyInYouTubeMusic.has(track.id))
       setState(tracks.length ? { found: { ...found, tracks } } : { error: 'Esa playlist no tiene canciones que se puedan escuchar aquí.' })
     } catch {
-      setState({ error: navigator.onLine ? 'No se pudo abrir esa playlist. Revisa que sea pública (o «no listada»).' : 'Sin conexión. Inténtalo de nuevo.' })
+      setState({ error: navigator.onLine ? 'No se pudo abrir esa playlist. Revisa que sea pública o «no listada» (las privadas no se pueden leer).' : 'Sin conexión. Inténtalo de nuevo.' })
     }
   }
 
@@ -120,7 +128,7 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
         {state && 'loading' in state && (
           <p className="mt-4 flex items-center gap-2 text-sm text-texto-sec">
             <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-            Leyendo la playlist…
+            Leyendo la playlist… (las grandes tardan unos segundos)
           </p>
         )}
         {state && 'error' in state && (
@@ -134,11 +142,15 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
               <Cover seed={found.title} src={found.image ?? (found.tracks[0] && coverSources(found.tracks[0]))} className="size-14 shrink-0 rounded" />
               <div className="min-w-0">
                 <p className="truncate font-bold">{found.title}</p>
-                <p className="text-sm text-texto-sec">{found.tracks.length === 1 ? '1 canción' : `${found.tracks.length} canciones`}</p>
+                <p className="text-sm text-texto-sec">
+                  {found.tracks.length === 1 ? '1 canción' : `${found.tracks.length} canciones`}
+                  {found.tracks.length >= IMPORT_MAX && ` (el máximo: ${IMPORT_MAX})`}
+                </p>
               </div>
             </div>
             <ol aria-label="Canciones de la playlist" className="scroll-fino mt-3 min-h-0 flex-1 overflow-y-auto">
-              {found.tracks.map((track) => (
+              {/* Se ven las primeras 200 (dibujar miles de filas trabaría el teléfono); se agregan todas. */}
+              {found.tracks.slice(0, PREVIEW).map((track) => (
                 <li key={track.id} className="flex items-center gap-3 py-1.5">
                   <Cover seed={track.id} src={coverSources(track)} className="size-10 shrink-0 rounded" />
                   <span className="min-w-0">
@@ -147,6 +159,7 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
                   </span>
                 </li>
               ))}
+              {found.tracks.length > PREVIEW && <li className="py-2 text-sm text-texto-sec">…y {found.tracks.length - PREVIEW} más</li>}
             </ol>
             <button
               type="button"

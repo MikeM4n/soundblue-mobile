@@ -1,7 +1,7 @@
 // «Playlists guardadas» (Tu biblioteca): playlists de YouTube que guardas con «+» en Buscar o en su página. Sus datos
 // (título, portada…) van en la biblioteca (library/store.ts); sus canciones, en IndexedDB (pueden ser cientos y no caben
 // bien en localStorage). Así abren al instante, también sin conexión; al abrirlas se actualizan desde YouTube Music.
-import { ytmPlaylist } from '../data/ytmusic'
+import { importPlaylist } from '../data/playlistImport'
 import { isTrack, type Track } from '../player/types'
 import { showToast } from '../ui/toast'
 import { library, type SavedPlaylist } from './store'
@@ -38,9 +38,9 @@ export async function savedTracks(id: string): Promise<Track[] | null> {
   return Array.isArray(tracks) ? tracks.filter(isTrack) : null
 }
 
-/** Lee la playlist completa de YouTube Music, guarda sus canciones y actualiza cuántas son. */
+/** Lee la playlist completa (YouTube Music y, en Android, NewPipe), guarda sus canciones y actualiza cuántas son. */
 export async function refreshSaved(id: string): Promise<Track[]> {
-  const { tracks } = await ytmPlaylist(id.replace(/^VL/, ''))
+  const { tracks } = await importPlaylist(id.replace(/^VL/, ''))
   if (library.savedPlaylist(id)) {
     await withStore('readwrite', (store) => store.put(tracks, id))
     library.updateSaved(id, { count: tracks.length })

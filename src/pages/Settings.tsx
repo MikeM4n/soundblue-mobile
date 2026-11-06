@@ -1,10 +1,12 @@
 import { ChevronRight } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { GenrePicker } from '../components/tastes/GenrePicker'
 import { Switch } from '../components/ui/Switch'
 import { onboarding } from '../lib/onboarding'
 import { settings, useSettings, type ThemeChoice } from '../lib/settings'
+import { offlineCache } from '../player/offlineCache'
+import { showToast } from '../ui/toast'
 
 const THEMES: { key: ThemeChoice; label: string; note: string }[] = [
   { key: 'sistema', label: 'Predeterminado del sistema', note: 'Claro u oscuro, como tu teléfono' },
@@ -35,6 +37,7 @@ export function Settings() {
         <Switch className="mt-3" label="Mostrar «Canción | Letra»" note="Si lo ocultas, siempre se ve la carátula (sin la letra). La música suena igual." checked={!hideViewToggle} onChange={(on) => settings.set({ hideViewToggle: !on })} />
         <Switch className="mt-4" label="Fila Dinámica" note="La cola nunca baja de 10: si quitas una o se acaba la lista, entran canciones de «Recomendadas». También se cambia en «Próximas en sonar»." checked={dynamicQueue} onChange={(on) => settings.set({ dynamicQueue: on })} />
       </section>
+      <OfflineSection />
       <section aria-labelledby="ajustes-generos" className="rounded-lg bg-tarjeta p-4">
         <h2 id="ajustes-generos" className="text-lg font-bold">Mis Géneros Favoritos</h2>
         <p className="mt-1 text-sm text-texto-sec">Se usan para filtrar selecciones, recomendaciones, búsqueda y la cola. Si no eliges ninguno, se usan tus artistas o la selección habitual.</p>
@@ -56,6 +59,57 @@ export function Settings() {
         <p className="mt-3 text-sm text-texto-sec">Versión: <span className="font-semibold text-texto">{__APP_VERSION__}</span></p>
       </section>
     </div>
+  )
+}
+
+/**
+ * Modo sin conexión: cuántas canciones de «Selecciones rápidas» hay guardadas en el teléfono (player/offlineCache.ts) y
+ * «Limpiar caché offline» para liberar espacio. Solo en la app de Android.
+ */
+function OfflineSection() {
+  const status = useSyncExternalStore(offlineCache.subscribe, offlineCache.get)
+  const [clearing, setClearing] = useState(false)
+  useEffect(() => {
+    void offlineCache.refresh()
+    // Mientras se ve Ajustes, el número se pone al día si está descargando.
+    const timer = window.setInterval(() => void offlineCache.refresh(), 5000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const megabytes = Math.max(1, Math.round(status.bytes / (1024 * 1024)))
+  const clear = async () => {
+    setClearing(true)
+    await offlineCache.clear()
+    setClearing(false)
+    showToast('Caché offline borrada')
+  }
+  return (
+    <section aria-labelledby="ajustes-offline" className="rounded-lg bg-tarjeta p-4">
+      <h2 id="ajustes-offline" className="text-lg font-bold">Modo sin conexión</h2>
+      <p className="mt-1 text-sm text-texto-sec">
+        Si te quedas sin internet, la música no se detiene: suenan, una tras otra, canciones de «Selecciones rápidas» guardadas en el teléfono. Al volver la conexión, sigue tu cola donde iba. Se guardan hasta {status.target} y cada una dura al menos 24 horas (con Wi-Fi se cambian por nuevas).
+      </p>
+      {offlineCache.enabled ? (
+        <>
+          <p className="mt-3 text-sm font-semibold" role="status">
+            {status.count
+              ? `${status.count === 1 ? '1 canción guardada' : `${status.count} canciones guardadas`} · ${megabytes} MB${status.downloading ? ' · guardando más…' : ''}`
+              : status.downloading
+                ? 'Guardando canciones…'
+                : 'Aún no hay canciones guardadas: se guardan solas al abrir Inicio con internet.'}
+          </p>
+          <button
+            type="button"
+            onClick={() => void clear()}
+            disabled={clearing || (!status.count && !status.downloading)}
+            className="mt-3 rounded-full bg-contraste/10 px-4 py-2 text-sm font-semibold transition-colors hover:bg-contraste/15 disabled:opacity-40"
+          >
+            Limpiar caché offline
+          </button>
+        </>
+      ) : (
+        <p className="mt-3 text-sm text-texto-sec">Solo en la app de Android.</p>
+      )}
+    </section>
   )
 }
 
