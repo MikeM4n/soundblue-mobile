@@ -35,17 +35,24 @@ import java.util.concurrent.Executors;
  * Caché offline: el audio de canciones de «Selecciones rápidas» guardado en el teléfono (archivos en files/offline y sus
  * datos en SharedPreferences). Sin internet, PlaybackService las pone a sonar una tras otra (modo offline) hasta que
  * vuelve la conexión. Se guarda el AUDIO: la URL que da NewPipe no sirve sin internet (y YouTube la vence en unas horas).
- * Reglas: hasta 15 canciones (unos 50 MB). Ninguna se borra sola antes de 24 h; solo «Limpiar caché offline» en Ajustes.
- * Si está llena, con Wi-Fi las de más de 24 h se cambian por nuevas de «Selecciones rápidas»; con datos móviles solo se
- * completa lo que falte (así no gasta datos cada día).
+ * Reglas (Ajustes → «Modo sin conexión»):
+ *  - Cuántas: 15, 30, 50 o 100 (50 por defecto: unos 175 MB).
+ *  - «Descargar solo con Wi-Fi» (encendido por defecto): solo se descarga o renueva en una red sin límite de datos
+ *    (Wi-Fi). Apagado, también con datos móviles. Si toca esperar, lo ofrecido queda pendiente y sigue solo en cuanto
+ *    llega el Wi-Fi (OfflineCachePlugin escucha los cambios de red).
+ *  - Ninguna se borra sola antes de 24 h; si está llena, las de más de 24 h se cambian por nuevas de «Selecciones
+ *    rápidas». Bajar el límite o «Limpiar caché offline» borra al momento.
  */
 @OptIn(markerClass = UnstableApi.class)
 final class OfflineCache {
     private static final String TAG = "OfflineCache";
     private static final String PREFS = "soundblue_offline";
     private static final String KEY = "entries";
+    private static final String LIMIT_KEY = "limit";
+    private static final String WIFI_ONLY_KEY = "wifiOnly";
     private static final String DIR = "offline";
-    static final int TARGET = 15;
+    static final int DEFAULT_LIMIT = 50;
+    private static final int[] LIMITS = {15, 30, 50, 100}; // las opciones de Ajustes
     static final long KEEP_MS = 24 * 60 * 60 * 1000L;
     private static final long MAX_BYTES = 25L * 1024 * 1024; // por canción: nada de mezclas de una hora
     private static final long MAX_SONG_S = 10 * 60;
@@ -54,6 +61,8 @@ final class OfflineCache {
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
     private static volatile boolean downloading;
     private static volatile int generation; // sube al limpiar: la descarga en curso se descarta
+    // Lo ofrecido que espera red (Wi-Fi, o internet): sigue solo al llegar (resume).
+    private static volatile List<JSONObject> waiting;
 
     /** Una canción guardada. */
     static final class Entry {
@@ -135,25 +144,88 @@ final class OfflineCache {
         return items;
     }
 
-    /** Cuántas hay, cuánto ocupan y si está descargando (para Ajustes). */
+    /** Cuántas hay, cuánto ocupan, cuántas tienen más de 24 h, el límite elegido, si hay Wi-Fi y si está descargando. */
     static JSObject status(Context context) {
         final List<Entry> entries = entries(context);
+        final long staleBefore = System.currentTimeMillis() - KEEP_MS;
         long bytes = 0;
         long oldest = 0;
         long newest = 0;
+        int stale = 0;
         for (final Entry entry : entries) {
             bytes += entry.size;
             if (oldest == 0 || entry.savedAt < oldest) oldest = entry.savedAt;
             newest = Math.max(newest, entry.savedAt);
+            if (entry.savedAt < staleBefore) stale++;
         }
         final JSObject status = new JSObject();
         status.put("count", entries.size());
         status.put("bytes", bytes);
-        status.put("target", TARGET);
+        status.put("target", limit(context));
+        status.put("stale", stale);
+        final boolean online = isOnline(context);
+        status.put("online", online);
+        status.put("wifi", online && !isMetered(context));
+        status.put("wifiOnly", wifiOnly(context));
+        status.put("waiting", waiting != null); // hay canciones esperando red para descargarse
         status.put("downloading", downloading);
         status.put("oldest", oldest);
         status.put("newest", newest);
         return status;
+    }
+
+    /** Cuántas canciones se guardan como mucho (Ajustes): 15, 30, 50 o 100. */
+    static int limit(Context context) {
+        final int saved = prefs(context).getInt(LIMIT_KEY, DEFAULT_LIMIT);
+        for (final int option : LIMITS) if (option == saved) return saved;
+        return DEFAULT_LIMIT;
+    }
+
+    /** Cambia el límite. Si es menor que las que hay, se borran las más viejas al momento (libera espacio). */
+    static void setLimit(Context context, int limit) {
+        boolean valid = false;
+        for (final int option : LIMITS) valid |= option == limit;
+        if (!valid) return;
+        prefs(context).edit().putInt(LIMIT_KEY, limit).apply();
+        trim(context, limit);
+    }
+
+    /** «Descargar solo con Wi-Fi» (encendido por defecto). */
+    static boolean wifiOnly(Context context) {
+        return prefs(context).getBoolean(WIFI_ONLY_KEY, true);
+    }
+
+    /** Cambia «Descargar solo con Wi-Fi». Al apagarlo, lo que esperaba Wi-Fi empieza ya con datos móviles. */
+    static void setWifiOnly(Context context, boolean enabled) {
+        prefs(context).edit().putBoolean(WIFI_ONLY_KEY, enabled).apply();
+        resume(context);
+    }
+
+    /** ¿Se puede descargar ahora? Con internet y, si es «solo con Wi-Fi», en una red sin límite de datos. */
+    static boolean canDownload(Context context) {
+        return isOnline(context) && (!wifiOnly(context) || !isMetered(context));
+    }
+
+    /** Cambió la red (o el ajuste): si había canciones esperando y ya se puede, siguen descargándose. */
+    static void resume(Context context) {
+        final List<JSONObject> pending = waiting;
+        if (pending == null || !canDownload(context)) return;
+        waiting = null;
+        offer(context, pending);
+    }
+
+    /** Deja como mucho `limit` canciones: salen las más viejas. */
+    private static void trim(Context context, int limit) {
+        synchronized (LOCK) {
+            final List<Entry> entries = entries(context);
+            if (entries.size() <= limit) return;
+            entries.sort((a, b) -> Long.compare(a.savedAt, b.savedAt));
+            final File dir = dir(context);
+            for (final Entry entry : entries.subList(0, entries.size() - limit)) {
+                if (!new File(dir, entry.file).delete()) Log.w(TAG, "No se pudo borrar " + entry.file);
+            }
+            write(context, new ArrayList<>(entries.subList(entries.size() - limit, entries.size())));
+        }
     }
 
     /** «Selecciones rápidas» que llegaron a la app: en segundo plano se guardan las que hagan falta (ver las reglas arriba). */
@@ -166,6 +238,7 @@ final class OfflineCache {
     static void clear(Context context) {
         synchronized (LOCK) {
             generation++;
+            waiting = null;
             final File[] files = dir(context).listFiles();
             if (files != null) for (final File file : files) if (!file.delete()) Log.w(TAG, "No se pudo borrar " + file);
             prefs(context).edit().remove(KEY).apply();
@@ -190,18 +263,28 @@ final class OfflineCache {
     private static void fill(Context context, List<JSONObject> offered) {
         downloading = true;
         try {
-            for (final JSONObject track : offered) {
+            for (int i = 0; i < offered.size(); i++) {
+                final JSONObject track = offered.get(i);
                 final String id = track.optString("id");
                 if (!StreamResolver.VIDEO_ID.matcher(id).matches() || has(context, id)) continue;
+                final int limit = limit(context);
                 final List<Entry> entries = entries(context);
-                final boolean room = entries.size() < TARGET;
+                final boolean room = entries.size() < limit;
                 final Entry stale = oldestStale(entries);
-                // Llena: solo con Wi-Fi se cambia una de más de 24 h. Con datos móviles se queda como está.
-                if (!room && (stale == null || isMetered(context))) return;
-                if (!isOnline(context)) return;
+                if (!room && stale == null) { // llena y todas de las últimas 24 h: nada que hacer
+                    waiting = null;
+                    return;
+                }
+                // «Solo con Wi-Fi» y sin Wi-Fi (o sin internet): se pausa aquí y sigue al llegar la red (resume).
+                if (!canDownload(context)) {
+                    waiting = new ArrayList<>(offered.subList(i, offered.size()));
+                    return;
+                }
                 if (!download(context, track)) continue;
                 if (!room) remove(context, stale.id);
+                trim(context, limit(context)); // por si bajaste el límite mientras se descargaba
             }
+            waiting = null;
         } finally {
             downloading = false;
         }

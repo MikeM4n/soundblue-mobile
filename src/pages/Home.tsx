@@ -15,7 +15,7 @@ import { favoriteGenres, useFavoriteGenres } from '../data/favoriteGenres'
 import { genreIndex, type GenreKey } from '../data/genreIndex'
 import { NOT_ORIGINAL, POPULAR_GENRES, QUICK_PICK_DEFAULT, QUICK_PICK_OPTIONS, sourcePlaylists, sourceTracks } from '../data/genres'
 import { listening } from '../data/history'
-import { artistKeys, capPerArtist, unique } from '../data/lists'
+import { artistKeys, capPerArtist, interleave, unique } from '../data/lists'
 import { createRadio } from '../data/radio'
 import { readTastes } from '../data/tastes'
 import { ytmHome, type YtmCard, type YtmSection } from '../data/ytmusic'
@@ -25,12 +25,15 @@ import { player } from '../player/engine'
 import { offlineCache } from '../player/offlineCache'
 import { coverSources, type Track } from '../player/types'
 import { useNowPlaying } from '../player/useNowPlaying'
+import { showToast } from '../ui/toast'
 
 // Estantes de YouTube Music que no se muestran: su «Selecciones rápidas» no es personal (sin iniciar sesión no sabe qué
 // escuchas; la nuestra va por género) y «Versiones y remixes» son covers.
 const HIDDEN_SHELVES = /selecciones r[aá]pidas|versiones|covers/i
 const MIN_TRACKS = 4 // un estante de canciones con menos, tras los filtros, no se muestra
 const YOUR_TILES = 4 // accesos con tus canciones bajo «Tus me gusta» y «Tu Top 50» (6 en total: filas completas)
+const OFFLINE_PLAYLISTS = 4 // playlists por género para la caché offline (hasta 100 canciones: hacen falta más que 2)
+let toldWaitingForWifi = false // «Esperando conexión Wi-Fi…»: una vez por sesión
 
 /**
  * Inicio: saludo, accesos rápidos (Tus me gusta, Tu Top 50 y tus canciones: las que te gustan o las últimas que sonaron), los
@@ -210,10 +213,34 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
   }
   const list = loaded[genre]
   const tracks = Array.isArray(list) ? list.filter((track) => !hide.has(track.id)).slice(0, 16) : []
-  // Caché offline (Android): estas canciones se guardan en el teléfono para cuando no haya internet (player/offlineCache.ts).
+  // Caché offline (Android; player/offlineCache.ts). Las que se ven aquí se ofrecen siempre: si toca esperar el Wi-Fi
+  // («Descargar solo con Wi-Fi»), quedan pendientes y se descargan solas al llegar.
   useEffect(() => {
     if (Array.isArray(list)) offlineCache.offer(list)
   }, [list])
+  // Si faltan para el límite de Ajustes (o hay de más de 24 h para renovar) y se puede descargar ya, se le ofrecen las de
+  // TODOS tus géneros de aquí, mezcladas. Si toca esperar el Wi-Fi, un aviso corto (una vez por sesión). Al abrir Inicio.
+  const genreKeys = genres.map((g) => g.key).join(',')
+  useEffect(() => {
+    if (!offlineCache.enabled) return
+    let alive = true
+    void offlineCache.refresh().then(async (status) => {
+      if (!alive || !offlineCache.needsMore(status)) return
+      if (!offlineCache.canDownload(status)) {
+        if (offlineCache.waitingForWifi(status) && !toldWaitingForWifi) {
+          toldWaitingForWifi = true
+          showToast('Esperando conexión Wi-Fi para descargar canciones offline')
+        }
+        return
+      }
+      const perGenre = Math.ceil((status.target * 1.5) / genres.length) // de sobra: algunas no se pueden guardar
+      const lists = await Promise.all(genres.map((source) => sourceTracks(source, perGenre, undefined, OFFLINE_PLAYLISTS).catch(() => [])))
+      if (alive) offlineCache.offer(interleave(lists))
+    })
+    return () => {
+      alive = false
+    }
+  }, [genreKeys]) // por sus claves: `genres` es otro arreglo en cada render
   return (
     <Section
       title="Selecciones rápidas"

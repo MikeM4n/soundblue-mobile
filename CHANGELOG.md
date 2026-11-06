@@ -1,5 +1,12 @@
 # Historial de cambios
 
+## 2026-11-06 — v1.9.1
+
+- Modo sin conexión más grande y configurable (Ajustes → «Modo sin conexión»):
+  - «Canciones a guardar»: 15, 30, 50 o 100 (por defecto 50, unos 175 MB; antes eran 15 fijas). Bajarlo borra al momento las más viejas.
+  - Para llenarla, Inicio ofrece las «Selecciones rápidas» de todos tus géneros (hasta 4 playlists de cada uno), mezcladas, no solo las del género que se ve.
+  - «Descargar solo con Wi-Fi» (encendido por defecto): solo se descarga o renueva en Wi-Fi (red sin límite de datos). Apagado, también con datos móviles. Si toca esperar, se pausa con el aviso «Esperando conexión Wi-Fi para descargar» (en Ajustes, y una vez por sesión en Inicio) y sigue sola al llegar el Wi-Fi con la app abierta. En la 1.9.0 el primer llenado usaba cualquier red; ahora respeta el interruptor.
+
 ## 2026-11-06 — v1.9.0
 
 - Buscar sin filtro de popularidad: además de «Canciones» trae «Videos» de YouTube Music y, en la app de Android, la búsqueda normal de YouTube con NewPipe (cualquier video, aunque tenga pocas vistas). Cada resultado sabe sus vistas; el chip «Solo populares» (apagado por defecto) deja solo lo que pasa de 1 millón.
