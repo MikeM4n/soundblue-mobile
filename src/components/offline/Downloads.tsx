@@ -16,6 +16,27 @@ export function DownloadStateIcon({ state, className = 'size-3.5' }: { state: Do
 }
 
 /**
+ * «Descargar» en la barra de «Sonando ahora» (junto a ⋮): la canción que suena va al PRINCIPIO de la cola y se baja en
+ * cuanto termine la que se está descargando. Muestra su estado: nube con flecha → flecha girando (o reloj si espera) → ✓.
+ */
+export function NowPlayingDownloadButton({ track }: { track: Track }) {
+  const state = useDownloadState(track.id)
+  if (!offlineCache.enabled) return null
+  const onClick = () => {
+    if (state === 'none' || state === 'queued') offlineCache.download([track], { priority: true })
+    else if (state === 'downloading') showToast('Se está descargando')
+    else showToast('Ya está descargada: suena sin internet')
+  }
+  const label =
+    state === 'done' ? 'Descargada' : state === 'downloading' ? 'Descargando esta canción' : state === 'queued' ? 'En cola: descargarla primero' : 'Descargar esta canción'
+  return (
+    <button type="button" aria-label={label} title={label} onClick={onClick} className="grid size-10 place-items-center rounded-full text-white transition-colors hover:bg-white/10">
+      {state === 'none' ? <CloudDownload className="size-6" aria-hidden="true" /> : <DownloadStateIcon state={state} className="size-6" />}
+    </button>
+  )
+}
+
+/**
  * Estado de descarga en la fila de una canción. `full` (listas con «Descargar»): todos los estados. Si no (Buscar,
  * Inicio…), solo el ✓ de las descargadas. Fuera de la app de Android no se muestra.
  */

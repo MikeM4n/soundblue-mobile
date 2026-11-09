@@ -4,8 +4,9 @@
 // descargada, descargándose (solo una a la vez), en cola (esperando su turno) o sin descargar.
 // Una descargada suena desde el teléfono, con o sin internet. Sin internet, la cola salta las que no están descargadas y,
 // si no queda ninguna, suenan tus descargas en bucle hasta que vuelve la conexión (PlaybackService).
-// Límite global (Ajustes): de 50 a 1000 canciones, guardado aquí (localStorage) y en el teléfono. Si lo que pides no cabe,
-// se borran las que menos escuchas (según tu historial). Las reglas están en
+// Límite global (Ajustes): de 50 a 10 000 canciones o «Sin límite», guardado aquí (localStorage) y en el teléfono. El otro
+// límite es el espacio del teléfono (siempre quedan 300 MB libres). Si lo que pides no cabe, se borran las que menos
+// escuchas (según tu historial). Las reglas están en
 // android/app/src/main/java/com/soundblue/mobile/OfflineCache.java.
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { useSyncExternalStore } from 'react'
@@ -16,7 +17,8 @@ import { sizedArtwork, thumbnail, type Track } from './types'
 export interface OfflineStatus {
   count: number // canciones descargadas
   bytes: number // lo que ocupan
-  target: number // el límite global (MIN_LIMIT a MAX_LIMIT)
+  target: number // el límite global (MIN_LIMIT a MAX_LIMIT, o UNLIMITED)
+  free: number // espacio libre en el teléfono (bytes)
   queued: number // en cola, esperando su turno (sin contar la que se descarga)
   downloading: boolean // hay una descargándose ahora
   online: boolean // hay internet
@@ -35,7 +37,7 @@ type Plays = Record<string, [number, number]> // id → [veces escuchada, últim
 type TrackEvent = { id: string; state: 'queued' | 'downloading' | 'done' | 'failed' | 'removed' }
 
 interface OfflineCachePlugin {
-  download(options: { tracks: NativeTrack[]; plays: Plays }): Promise<void>
+  download(options: { tracks: NativeTrack[]; plays: Plays; priority?: boolean }): Promise<void>
   cancel(options: { ids: string[] }): Promise<void>
   remove(options: { ids: string[] }): Promise<OfflineStatus>
   status(): Promise<OfflineStatus>
@@ -45,14 +47,17 @@ interface OfflineCachePlugin {
   clear(): Promise<OfflineStatus>
   addListener(event: 'track', listener: (event: TrackEvent) => void): Promise<unknown>
   addListener(event: 'evicted', listener: (event: { count: number }) => void): Promise<unknown>
-  addListener(event: 'full', listener: (event: { skipped: number }) => void): Promise<unknown>
+  addListener(event: 'full', listener: (event: { skipped: number; storage?: boolean }) => void): Promise<unknown>
 }
 
 const OfflineCache = registerPlugin<OfflineCachePlugin>('OfflineCache')
 
 export const MIN_LIMIT = 50
-export const MAX_LIMIT = 1000
+export const MAX_LIMIT = 10_000
+export const UNLIMITED = 0 // «Sin límite»: solo cuenta el espacio del teléfono
 export const DEFAULT_LIMIT = 200
+/** Las posiciones del slider de Ajustes (más finas al principio); la última es «Sin límite». */
+export const LIMIT_STEPS = [50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000, 7500, 10_000, UNLIMITED] as const
 /** Lo que ocupa una canción descargada, más o menos (audio de unos 130 kbps): para mostrar el espacio en Ajustes. */
 export const MB_PER_SONG = 3.5
 const LIMIT_KEY = 'soundblue:offline-limite'
@@ -63,6 +68,7 @@ const EMPTY: OfflineStatus = {
   count: 0,
   bytes: 0,
   target: DEFAULT_LIMIT,
+  free: 0,
   queued: 0,
   downloading: false,
   online: false,
@@ -73,12 +79,13 @@ const EMPTY: OfflineStatus = {
   newest: 0,
 }
 
-const clampLimit = (value: number) => Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, Math.round(value)))
+const clampLimit = (value: number) => (value <= UNLIMITED ? UNLIMITED : Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, Math.round(value))))
 
 function readLimit(): number | null {
   try {
-    const saved = Number(localStorage.getItem(LIMIT_KEY))
-    return saved ? clampLimit(saved) : null
+    const raw = localStorage.getItem(LIMIT_KEY)
+    const saved = raw === null ? NaN : Number(raw)
+    return Number.isFinite(saved) ? clampLimit(saved) : null // «0» es «Sin límite», no «sin guardar»
   } catch {
     return null
   }
@@ -142,6 +149,9 @@ const noteEvicted = collector((n) => showToast(`Se borraron ${n === 1 ? '1 canci
 const noteFull = collector((n) =>
   showToast(`No ${n === 1 ? 'cupo 1 canción' : `cupieron ${n} canciones`}: sube el límite en Ajustes → Modo sin conexión`, undefined, 5000),
 )
+const noteNoSpace = collector((n) =>
+  showToast(`No hay más espacio en el teléfono: ${n === 1 ? 'no se descargó 1 canción' : `no se descargaron ${n} canciones`}`, undefined, 5000),
+)
 const noteFailed = collector((n) => showToast(`${n === 1 ? '1 canción no se pudo' : `${n} canciones no se pudieron`} descargar`))
 
 /** Sale de la cola y de «descargando». */
@@ -196,25 +206,30 @@ export const offlineCache = {
   },
 
   /**
-   * «Descargar»: las que faltan van al FINAL de la cola, en orden (esperan a que termine lo que pediste antes). Las que
-   * ya están descargadas o en la cola no se repiten. Devuelve cuántas entraron. Si toca esperar el Wi-Fi o internet, avisa.
+   * «Descargar»: las que faltan van al FINAL de la cola, en orden (esperan a que termine lo que pediste antes). Con
+   * `priority` (el botón de «Sonando ahora»), al PRINCIPIO: se bajan en cuanto termine la que se está descargando (también
+   * si ya esperaban en la cola). Las que ya están descargadas no se repiten. Devuelve cuántas entraron. Si toca esperar
+   * el Wi-Fi o internet, avisa.
    */
-  download(tracks: readonly Track[]): number {
+  download(tracks: readonly Track[], { priority = false }: { priority?: boolean } = {}): number {
     if (!enabled) return 0
     const seen = new Set<string>()
     const wanted = tracks.filter((track) => {
-      const fresh = !seen.has(track.id) && offlineCache.stateOf(track.id) === 'none'
+      const state = offlineCache.stateOf(track.id)
+      const fresh = !seen.has(track.id) && (state === 'none' || (priority && state === 'queued'))
       seen.add(track.id)
       return fresh
     })
     if (!wanted.length) return 0
-    const busy = current !== null || queued.size > 0 // ya había otra descarga: estas esperan su turno
+    const wantedIds = new Set(wanted.map((track) => track.id))
+    const busy = current !== null || [...queued].some((id) => !wantedIds.has(id)) // hay otras antes en la cola
     wanted.forEach((track) => queued.add(track.id))
     emit()
-    void OfflineCache.download({ tracks: wanted.map(nativeTrack), plays: plays() }).catch(() => {})
-    const count = wanted.length === 1 ? '1 canción' : `${wanted.length} canciones`
-    if (!status.online) showToast(`${count} en cola: se descargarán cuando vuelva internet`)
+    void OfflineCache.download({ tracks: wanted.map(nativeTrack), plays: plays(), priority }).catch(() => {})
+    const count = wanted.length === 1 ? (priority ? `«${wanted[0].title}»` : '1 canción') : `${wanted.length} canciones`
+    if (!status.online) showToast(`${count} en cola: se descargará${wanted.length === 1 ? '' : 'n'} cuando vuelva internet`)
     else if (status.wifiOnly && !status.wifi) showToast(`${count} en cola: esperando conexión Wi-Fi (o desactiva «Descargar solo con Wi-Fi» en Ajustes)`, undefined, 4500)
+    else if (priority) showToast(current ? `${count} se descarga en cuanto termine la que va` : `Descargando ${count}`)
     else showToast(busy ? `${count} en cola: se descargan cuando termine lo anterior` : `Descargando ${count}`)
     refreshSoon()
     return wanted.length
@@ -331,6 +346,6 @@ if (enabled) {
     refreshSoon()
   })
   void OfflineCache.addListener('evicted', ({ count }) => noteEvicted(count))
-  void OfflineCache.addListener('full', ({ skipped }) => noteFull(skipped))
+  void OfflineCache.addListener('full', ({ skipped, storage }) => (storage ? noteNoSpace(skipped) : noteFull(skipped)))
   void load()
 }

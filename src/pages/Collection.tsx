@@ -2,6 +2,7 @@ import { ChevronLeft, Shuffle } from 'lucide-react'
 import { useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { ImportButton, ImportPlaylistDialog } from '../components/library/ImportPlaylistDialog'
+import { playlistCover } from '../components/library/LibraryList'
 import { DownloadListButton } from '../components/offline/Downloads'
 import { TrackList } from '../components/tracks/TrackList'
 import type { RemoveAction } from '../components/tracks/trackActions'
@@ -88,7 +89,8 @@ export function Collection() {
       ) : (
         <TrackList tracks={data.tracks} onPlay={play} removeAction={data.removeAction} swipe={data.swipe} downloads />
       )}
-      {importing && <ImportPlaylistDialog onClose={() => setImporting(false)} />}
+      {/* Abierto desde «Tus me gusta»: la casilla de agregar también ahí viene marcada. */}
+      {importing && <ImportPlaylistDialog toFavorites onClose={() => setImporting(false)} />}
     </div>
   )
 }
@@ -123,9 +125,9 @@ function resolve(tipo: string, id: string, favorites: Track[], playlists: Return
     if (!playlist) return null
     const first = playlist.tracks[0]
     return {
-      kind: 'Playlist',
+      kind: playlist.source ? 'Playlist importada de YouTube' : 'Playlist',
       name: playlist.name,
-      cover: <Cover seed={playlist.id} src={first ? coverSources(first, 'large') : undefined} className={bigCover} />,
+      cover: <Cover seed={playlist.id} src={playlistCover(playlist.image, first ? coverSources(first, 'large') : [])} className={bigCover} />,
       tracks: playlist.tracks,
       removeAction: (i) => ({ listName: playlist.name, remove: () => library.removeFromPlaylistAt(playlist.id, i) }),
     }

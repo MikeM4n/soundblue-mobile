@@ -1,5 +1,5 @@
 import { Plus, Settings as SettingsIcon } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, Navigate } from 'react-router'
 import { Logo } from '../components/brand/Logo'
 import { ArtistTopSongsRow } from '../components/tracks/ArtistTopSongs'
@@ -30,6 +30,10 @@ import { useNowPlaying } from '../player/useNowPlaying'
 const HIDDEN_SHELVES = /selecciones r[aá]pidas|versiones|covers/i
 const MIN_TRACKS = 4 // un estante de canciones con menos, tras los filtros, no se muestra
 const YOUR_TILES = 4 // accesos con tus canciones bajo «Tus me gusta» y «Tu Top 50» (6 en total: filas completas)
+const QUICK_SHOWN = 16 // «Selecciones rápidas»: las que se ven de cada género…
+const QUICK_FIRST = 24 // …las que se piden al principio (las demás esperan para reemplazar a las que tocas)…
+const QUICK_MORE = 24 // …y cuántas más se piden cuando quedan pocas de reserva
+const QUICK_RECENT_MS = 24 * 3600 * 1000 // las que sonaron en las últimas 24 h no se muestran
 
 /**
  * Inicio: saludo, accesos rápidos (Tus me gusta, Tu Top 50 y tus canciones: las que te gustan o las últimas que sonaron), los
@@ -177,6 +181,8 @@ export function Home() {
  * «Selecciones rápidas» por género (por defecto Salsa, Reggaetón, Merengue y Popular; con «+» eliges cuáles, y se
  * recuerda en este navegador): canciones de las playlists de YouTube Music de ese género, sin las que ya se ven en otro
  * estante de Inicio. Cada género se pide al elegirlo. Van en el orden en que los elegiste (el primero se ve al abrir).
+ * Siempre frescas: la que tocas sale de la lista y en su lugar entra otra del mismo género que no sonó en las últimas
+ * 24 h (cuando quedan pocas de reserva, se piden más).
  */
 function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<string>; onPlay: (track: Track) => void; artistGenres: string[] }) {
   const preferred = useFavoriteGenres()
@@ -191,11 +197,13 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
   const [selected, setGenre] = useState(genres[0].key)
   const genre = genres.some((g) => g.key === selected) ? selected : genres[0].key // si quitaste el que se veía, el primero
   const [loaded, setLoaded] = useState<Record<string, Track[] | 'error'>>({})
+  const [played, setPlayed] = useState<ReadonlySet<string>>(new Set()) // las que tocaste aquí: salen de la lista
+  const loadingMore = useRef(new Set<string>()) // géneros que están pidiendo más canciones
   useEffect(() => {
     if (loaded[genre]) return
     let alive = true
     const source = QUICK_PICK_OPTIONS.find((g) => g.key === genre)!
-    sourceTracks(source, 24)
+    sourceTracks(source, QUICK_FIRST)
       .then((tracks) => alive && setLoaded((all) => ({ ...all, [genre]: tracks.length ? tracks : 'error' })))
       .catch(() => alive && setLoaded((all) => ({ ...all, [genre]: 'error' })))
     return () => {
@@ -208,7 +216,31 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
     favoriteGenres.set(chosen.includes(typed) ? chosen.filter((k) => k !== typed) : [...chosen, typed])
   }
   const list = loaded[genre]
-  const tracks = Array.isArray(list) ? list.filter((track) => !hide.has(track.id)).slice(0, 16) : []
+  const recent = listening.playedWithin(QUICK_RECENT_MS)
+  const fresh = Array.isArray(list) ? list.filter((track) => !hide.has(track.id) && !played.has(track.id) && !recent.has(track.id)) : []
+  const tracks = fresh.slice(0, QUICK_SHOWN)
+  // Más del mismo género (las mismas playlists, más adentro), sin repetir las que ya había.
+  const loadMore = (key: string, have: number) => {
+    if (loadingMore.current.has(key)) return
+    loadingMore.current.add(key)
+    const source = QUICK_PICK_OPTIONS.find((g) => g.key === key)!
+    sourceTracks(source, have + QUICK_MORE)
+      .then((more) =>
+        setLoaded((all) => {
+          const base = Array.isArray(all[key]) ? all[key] : []
+          const ids = new Set(base.map((track) => track.id))
+          return { ...all, [key]: [...base, ...more.filter((track) => !ids.has(track.id))] }
+        }),
+      )
+      .catch(() => {})
+      .finally(() => loadingMore.current.delete(key))
+  }
+  // Tocar una: suena (con su radio), sale de aquí y entra otra; si quedan pocas de reserva, se piden más.
+  const play = (track: Track) => {
+    onPlay(track)
+    setPlayed((before) => new Set(before).add(track.id))
+    if (Array.isArray(list) && fresh.length - 1 < QUICK_SHOWN + 4) loadMore(genre, list.length)
+  }
   return (
     <Section
       title="Selecciones rápidas"
@@ -253,7 +285,7 @@ function GenreQuickPicks({ hide, onPlay, artistGenres }: { hide: ReadonlySet<str
       <Chips label="Género de las selecciones rápidas" options={genres} value={genre} onChange={setGenre} />
       {list === undefined && <SkeletonRows />}
       {list === 'error' && <p className="px-4 text-sm text-texto-sec md:px-6">No se pudo cargar este género. Revisa tu conexión.</p>}
-      {tracks.length > 0 && <TrackPages key={genre} tracks={tracks} onPlay={(i) => onPlay(tracks[i])} />}
+      {tracks.length > 0 && <TrackPages key={genre} tracks={tracks} onPlay={(i) => play(tracks[i])} />}
     </Section>
   )
 }

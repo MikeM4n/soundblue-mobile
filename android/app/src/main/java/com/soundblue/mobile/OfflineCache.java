@@ -47,9 +47,10 @@ import java.util.concurrent.Executors;
  * avisa «downloading»; las demás, «queued» (esperan su turno).
  * Una descargada suena desde el teléfono (PlaybackService.resolve), con o sin internet. Sin internet, PlaybackService salta
  * las que no están descargadas y, si ya no queda ninguna por delante, pone tus descargas en bucle (modo offline).
- * Límite global (Ajustes, guardado también en la app): de 50 a 1000 canciones, 200 por defecto. Si lo que pides no cabe,
- * se borran las que menos escuchas (y las más viejas), según el historial de la app; nunca las de la misma descarga. Si
- * aun así no cabe, lo que falta no se descarga (onFull).
+ * Límite global (Ajustes, guardado también en la app): de 50 a 10 000 canciones o «Sin límite» (0), 200 por defecto. El
+ * otro límite es el espacio del teléfono: siempre quedan libres al menos 300 MB. Si lo que pides no cabe (por el límite o
+ * por el espacio), se borran las que menos escuchas (y las más viejas), según el historial de la app; nunca las de la
+ * misma descarga. Si aun así no cabe, lo que falta no se descarga (onFull, diciendo si fue por el espacio).
  * «Descargar solo con Wi-Fi» (encendido por defecto): solo se descarga en una red sin límite de datos; si toca esperar,
  * lo pendiente sigue solo al llegar la red (resume, desde OfflineCachePlugin).
  */
@@ -62,7 +63,10 @@ final class OfflineCache {
     private static final String WIFI_ONLY_KEY = "wifiOnly";
     private static final String DIR = "offline";
     static final int MIN_LIMIT = 50;
-    static final int MAX_LIMIT = 1000;
+    static final int MAX_LIMIT = 10_000;
+    static final int UNLIMITED = 0; // «Sin límite»: solo cuenta el espacio del teléfono
+    private static final long RESERVE_BYTES = 300L * 1024 * 1024; // lo que siempre queda libre en el teléfono
+    private static final long SONG_ESTIMATE = 10L * 1024 * 1024; // lo que se le pide de espacio a una canción antes de bajarla
     static final int DEFAULT_LIMIT = 200;
     private static final long MAX_BYTES = 25L * 1024 * 1024; // por canción: nada de mezclas de una hora
     private static final long MAX_SONG_S = 10 * 60;
@@ -80,8 +84,11 @@ final class OfflineCache {
         /** Se borraron `count` para hacer espacio (al descargar algo nuevo o al bajar el límite). */
         void onEvicted(int count);
 
-        /** No cupieron `skipped` de las que pediste (el límite está lleno de las que estás descargando). */
-        void onFull(int skipped);
+        /**
+         * No cupieron `skipped` de las que pediste: el límite (o, si `storage`, el espacio del teléfono) está lleno de las
+         * que estás descargando.
+         */
+        void onFull(int skipped, boolean storage);
     }
 
     /** Una canción descargada. `manual`: siempre true desde la 2.0.1 (false era el respaldo automático, que se borra). */
@@ -144,6 +151,7 @@ final class OfflineCache {
     private static volatile String current; // la que se está descargando (las demás de la cola esperan)
     private static volatile boolean cancelCurrent;
     private static boolean networkFailure; // la última fetch falló por la red (solo el hilo de descargas)
+    private static int preFreed; // las que se borraron por espacio antes de la descarga en curso (solo el hilo de descargas)
     private static String retryId; // la que falló por un corte de red…
     private static int retryCount; // …y cuántas veces seguidas
     private static volatile int generation; // sube al limpiar: la descarga en curso se descarta
@@ -275,7 +283,10 @@ final class OfflineCache {
             status.put("downloading", current != null);
         }
         final boolean online = isOnline();
-        status.put("target", limit());
+        status.put("target", savedLimit()); // 0: sin límite
+        synchronized (LOCK) {
+            status.put("free", dir().getUsableSpace()); // espacio libre en el teléfono (bytes)
+        }
         status.put("online", online);
         status.put("wifi", online && !isMetered());
         status.put("wifiOnly", wifiOnly());
@@ -302,17 +313,29 @@ final class OfflineCache {
 
     // ---- Ajustes ----
 
-    /** El límite global (50 a 1000). Las de la 1.9.x (15, 30) suben a 50. */
-    static int limit() {
+    /** El límite elegido: 50 a 10 000, o 0 («Sin límite»). Las de la 1.9.x (15, 30) suben a 50. */
+    static int savedLimit() {
         final int saved = prefs().getInt(LIMIT_KEY, DEFAULT_LIMIT);
-        return Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, saved));
+        return saved <= UNLIMITED ? UNLIMITED : Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, saved));
     }
 
-    /** Cambia el límite. Si hay más de las que caben, se borran al momento (las que menos escuchas; ver pickVictim). */
+    /** Cuántas caben como mucho (sin límite: todas las que permita el espacio del teléfono). */
+    static int limit() {
+        final int saved = savedLimit();
+        return saved == UNLIMITED ? Integer.MAX_VALUE : saved;
+    }
+
+    /** ¿Queda espacio en el teléfono para una canción más (dejando siempre 300 MB libres)? Con LOCK. */
+    private static boolean diskHasRoom() {
+        return dir().getUsableSpace() >= RESERVE_BYTES + SONG_ESTIMATE;
+    }
+
+    /** Cambia el límite (0: sin límite). Si hay más de las que caben, se borran al momento (las que menos escuchas). */
     static void setLimit(Context context, int value) {
         init(context);
-        final int limit = Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, value));
-        prefs().edit().putInt(LIMIT_KEY, limit).apply();
+        final int saved = value <= UNLIMITED ? UNLIMITED : Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, value));
+        prefs().edit().putInt(LIMIT_KEY, saved).apply();
+        final int limit = limit();
         int evicted = 0;
         synchronized (LOCK) {
             while (index().size() > limit) {
@@ -353,21 +376,40 @@ final class OfflineCache {
      * Las que ya están descargadas no se repiten.
      */
     static void download(Context context, List<JSONObject> tracks) {
+        download(context, tracks, false);
+    }
+
+    /**
+     * Como download; con `priority` (el botón de «Sonando ahora») van al PRINCIPIO de la cola: se bajan en cuanto termine
+     * la que se está descargando (también si ya estaban esperando más atrás).
+     */
+    static void download(Context context, List<JSONObject> tracks, boolean priority) {
         init(context);
         final List<String> queued = new ArrayList<>();
         final List<String> pinned = new ArrayList<>();
         synchronized (LOCK) {
+            final LinkedHashMap<String, JSONObject> first = new LinkedHashMap<>();
             for (final JSONObject track : tracks) {
                 final String id = track.optString("id");
                 if (!StreamResolver.VIDEO_ID.matcher(id).matches()) continue;
                 batch.add(id);
                 if (index().containsKey(id)) {
                     pinned.add(id);
-                } else if (!manualQueue.containsKey(id) && (!id.equals(current) || cancelCurrent)) {
+                } else if (id.equals(current) && !cancelCurrent) {
+                    continue; // ya se está descargando
+                } else if (priority) {
+                    if (manualQueue.remove(id) == null) queued.add(id);
+                    first.put(id, track);
+                } else if (!manualQueue.containsKey(id)) {
                     // (La que se está cancelando ahora mismo vuelve a la cola: la pediste otra vez.)
                     manualQueue.put(id, track);
                     queued.add(id);
                 }
+            }
+            if (!first.isEmpty()) {
+                first.putAll(manualQueue);
+                manualQueue.clear();
+                manualQueue.putAll(first);
             }
         }
         for (final String id : pinned) notifyTrack(id, "done");
@@ -458,6 +500,7 @@ final class OfflineCache {
     private static void run() {
         int evicted = 0;
         int skipped = 0;
+        boolean storage = false; // lo que no cupo fue por el espacio del teléfono
         try {
             while (true) {
                 final Job job;
@@ -483,11 +526,12 @@ final class OfflineCache {
                 }
                 evicted += result[0];
                 skipped += result[1];
+                storage |= result[2] == 1;
             }
         } finally {
             notifyEvicted(evicted);
             final Listener target = listener;
-            if (skipped > 0 && target != null) target.onFull(skipped);
+            if (skipped > 0 && target != null) target.onFull(skipped, storage);
         }
     }
 
@@ -511,33 +555,44 @@ final class OfflineCache {
     }
 
     /**
-     * Una de las que pediste. Devuelve {borradas para hacer espacio, las que no cupieron}, o null si se cayó la red (queda
-     * en la cola para cuando vuelva).
+     * Una de las que pediste. Devuelve {borradas para hacer espacio, las que no cupieron, 1 si fue por el espacio del
+     * teléfono}, o null si se cayó la red (queda en la cola para cuando vuelva).
      */
     @Nullable
     private static int[] downloadManual(Job job) {
         final String id = job.id();
         synchronized (LOCK) {
-            if (!manualQueue.containsKey(id)) return new int[] {0, 0}; // la cancelaste justo ahora
+            if (!manualQueue.containsKey(id)) return new int[] {0, 0, 0}; // la cancelaste justo ahora
             // Ya está descargada (la pediste en dos listas): no se baja otra vez.
             if (index().containsKey(id)) {
                 manualQueue.remove(id);
                 notifyTrack(id, "done");
-                return new int[] {0, 0};
+                return new int[] {0, 0, 0};
             }
-            // ¿Cabe? Si está lleno y no hay nada que se pueda borrar, lo que falta de tus descargas no se descarga.
-            if (index().size() >= limit() && pickVictim() == null) {
+            // Poco espacio en el teléfono: se borran antes las que menos escuchas (nunca las de esta descarga).
+            int freed = 0;
+            while (!diskHasRoom()) {
+                final Entry victim = pickVictim();
+                if (victim == null) break;
+                removeEntry(victim);
+                freed++;
+            }
+            if (freed > 0) write();
+            // ¿Cabe? Si está lleno (límite o espacio) y no hay nada que se pueda borrar, lo que falta no se descarga.
+            final boolean noDisk = !diskHasRoom();
+            if (noDisk || (index().size() >= limit() && pickVictim() == null)) {
                 final List<String> skipped = new ArrayList<>(manualQueue.keySet());
                 manualQueue.clear();
                 for (final String skip : skipped) notifyTrack(skip, "removed");
-                return new int[] {0, skipped.size()};
+                return new int[] {freed, skipped.size(), noDisk ? 1 : 0};
             }
             current = id;
             cancelCurrent = false;
+            preFreed = freed;
         }
         notifyTrack(id, "downloading");
         final File file = fetch(job.track);
-        int evicted = 0;
+        int evicted = preFreed;
         boolean saved = false;
         final String state;
         synchronized (LOCK) {
@@ -572,7 +627,7 @@ final class OfflineCache {
             }
         }
         notifyTrack(id, state);
-        return new int[] {evicted, 0};
+        return new int[] {evicted, 0, 0};
     }
 
     /**

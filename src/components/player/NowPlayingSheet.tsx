@@ -9,6 +9,7 @@ import { player } from '../../player/engine'
 import { sheetState, stagePulse, youtubeView, type YouTubeView } from '../../player/stage'
 import { coverSources, type Track } from '../../player/types'
 import { usePlaybackTime, usePlayer } from '../../player/usePlayer'
+import { NowPlayingDownloadButton } from '../offline/Downloads'
 import { TrackMenu } from '../tracks/TrackMenu'
 import { toggleFavorite } from '../tracks/trackActions'
 import { Cover } from '../ui/Cover'
@@ -176,7 +177,9 @@ export function NowPlayingSheet() {
             </div>
             {!hideViewToggle && <ViewToggle view={view} />}
           </div>
-          <div className="justify-self-end">
+          <div className="flex items-center gap-1 justify-self-end">
+            {/* Descargar la que suena, al instante (va primera en la cola de descargas). Solo en Android. */}
+            <NowPlayingDownloadButton track={current} />
             <TrackMenu track={current} />
           </div>
         </header>

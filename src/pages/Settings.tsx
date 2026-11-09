@@ -5,7 +5,7 @@ import { GenrePicker } from '../components/tastes/GenrePicker'
 import { Switch } from '../components/ui/Switch'
 import { onboarding } from '../lib/onboarding'
 import { settings, useSettings, type ThemeChoice } from '../lib/settings'
-import { MAX_LIMIT, MB_PER_SONG, MIN_LIMIT, offlineCache, useOfflineStatus } from '../player/offlineCache'
+import { LIMIT_STEPS, MB_PER_SONG, UNLIMITED, offlineCache, useOfflineStatus } from '../player/offlineCache'
 import { showToast } from '../ui/toast'
 
 const LIMIT_COMMIT_MS = 700 // el límite de descargas se aplica al dejar de mover el slider
@@ -88,7 +88,12 @@ function OfflineSection() {
     return () => window.clearTimeout(timer)
   }, [draft])
   const limit = draft ?? status.target
-  const over = Math.max(0, status.count - limit)
+  const unlimited = limit === UNLIMITED
+  const over = unlimited ? 0 : Math.max(0, status.count - limit)
+  // El slider va por posiciones (más finas al principio); la última es «Sin límite».
+  // (Un límite de antes que no es una posición, p. ej. 250, se muestra en la siguiente: 300.)
+  const step = unlimited ? LIMIT_STEPS.length - 1 : Math.max(0, LIMIT_STEPS.findIndex((value) => value !== UNLIMITED && value >= limit))
+  const limitText = unlimited ? 'Sin límite (solo el espacio del teléfono)' : `${limit.toLocaleString('es-CO')} canciones (${size(limit * MB_PER_SONG)})`
   const clear = async () => {
     if (!window.confirm(`¿Borrar las ${status.count === 1 ? 'canción descargada' : `${status.count} canciones descargadas`} y la cola de descargas?`)) return
     setClearing(true)
@@ -118,21 +123,22 @@ function OfflineSection() {
           <input
             id="ajustes-offline-limite"
             type="range"
-            min={MIN_LIMIT}
-            max={MAX_LIMIT}
-            step={10}
-            value={limit}
-            onChange={(e) => setDraft(Number(e.target.value))}
-            aria-valuetext={`${limit} canciones, unos ${size(limit * MB_PER_SONG)}`}
+            min={0}
+            max={LIMIT_STEPS.length - 1}
+            step={1}
+            value={step}
+            onChange={(e) => setDraft(LIMIT_STEPS[Number(e.target.value)])}
+            aria-valuetext={limitText}
             className="mt-3 w-full accent-acento"
           />
           <div className="flex justify-between text-xs text-texto-sec" aria-hidden="true">
-            <span>{MIN_LIMIT}</span>
-            <span>{MAX_LIMIT}</span>
+            <span>{LIMIT_STEPS[0]}</span>
+            <span>Sin límite</span>
           </div>
           <p className="mt-2 text-sm font-semibold" role="status">
-            Usando: {status.count === 1 ? '1 canción' : `${status.count} canciones`} ({size(status.bytes / (1024 * 1024))}) / Límite: {limit} canciones ({size(limit * MB_PER_SONG)})
+            Usando: {status.count === 1 ? '1 canción' : `${status.count.toLocaleString('es-CO')} canciones`} ({size(status.bytes / (1024 * 1024))}) / Límite: {limitText}
           </p>
+          {status.free > 0 && <p className="text-sm text-texto-sec">Espacio libre en el teléfono: {size(status.free / (1024 * 1024))} (siempre se dejan 300 MB libres)</p>}
           {over > 0 && (
             <p className="mt-1 text-sm text-amber-400">
               Con este límite se borrarán {over === 1 ? '1 canción' : `${over} canciones`}: las que menos escuchas.

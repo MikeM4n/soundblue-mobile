@@ -1,5 +1,13 @@
 # Historial de cambios
 
+## 2026-11-09 — v2.0.2
+
+- Buscar encuentra playlists públicas de YouTube de cualquier usuario (también las tuyas, si son públicas): además de las de YouTube Music, en Android se buscan con NewPipe (filtro «Playlists» de YouTube, sin «Mix») y se abren en su página, donde se pueden guardar, reproducir o descargar. Arreglado de paso: la búsqueda de YouTube con NewPipe fallaba siempre (faltaba `fetchPage()` antes de leer los resultados), así que los «Videos» de YouTube ahora sí aparecen.
+- «Importar playlist» la guarda como playlist TUYA en Tu biblioteca (nombre, carátula y canciones), para abrirla, reproducirla o descargarla completa («Guardar en Tu biblioteca» / «Guardar y descargar»). Importarla otra vez la actualiza en vez de duplicarla. Casilla opcional «Agregar también sus canciones a Tus me gusta» (marcada si se abre desde Tus me gusta). Si una playlist enorme no cabe en el almacenamiento del navegador, lo avisa y no deja nada a medias.
+- Descargas sin límite fijo: el slider de Ajustes va de 50 a 10 000 canciones por posiciones (más finas al principio) y termina en «Sin límite». El otro límite es el espacio del teléfono (se muestra el libre): siempre quedan 300 MB; si falta espacio, se borran las que menos escuchas (nunca las de la misma descarga) y, si aun así no hay, avisa «No hay más espacio en el teléfono».
+- «Sonando ahora»: botón «Descargar» (nube con flecha) junto a ⋮. La canción que suena va primera en la cola de descargas (se baja en cuanto termine la que va) y el botón muestra su estado: flecha girando (o reloj) → ✓ verde.
+- «Selecciones rápidas» siempre frescas: la canción que tocas sale de la lista y en su lugar entra otra del mismo género que no sonó en las últimas 24 h; si quedan pocas de reserva, se piden más.
+
 ## 2026-11-06 — v2.0.1
 
 - Descargas 100 % manuales: ya no se descargan solas canciones de «Selecciones rápidas» como respaldo. Solo se guarda lo que tú descargas (listas, «Tus me gusta» o canciones sueltas). Lo que quedaba del respaldo automático de la 1.9/2.0.0 se borra al abrir la app. Sin internet, si en tu cola no quedan descargadas, suenan tus descargas en bucle hasta que vuelve la conexión.

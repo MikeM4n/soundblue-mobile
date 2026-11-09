@@ -12,6 +12,9 @@ const count = (n: number) => (n === 1 ? '1 canción' : `${n} canciones`)
  * «Tus me gusta», tus playlists y (si `saved`) las playlists de YouTube que guardaste. La usan la
  * barra lateral y la página Biblioteca (que muestra las guardadas aparte, en «Playlists guardadas»).
  */
+/** La carátula de una playlist tuya: la suya (si es importada) y, si no carga, la de su primera canción. */
+export const playlistCover = (image: string | undefined, first: string[]) => (image ? [image, ...first] : first.length ? first : undefined)
+
 export function LibraryList({ coverSize = 'size-12', saved: withSaved = true }: { coverSize?: string; saved?: boolean }) {
   const { favorites, playlists, saved } = useLibrary()
   return (
@@ -24,8 +27,8 @@ export function LibraryList({ coverSize = 'size-12', saved: withSaved = true }: 
           <LibraryItem
             to={`/coleccion/playlist/${p.id}`}
             title={p.name}
-            subtitle={`Playlist · ${count(p.tracks.length)}`}
-            cover={<Cover seed={p.id} src={p.tracks[0] ? coverSources(p.tracks[0]) : undefined} className={`${coverSize} shrink-0 rounded-md`} />}
+            subtitle={`${p.source ? 'Importada de YouTube' : 'Playlist'} · ${count(p.tracks.length)}`}
+            cover={<Cover seed={p.id} src={playlistCover(p.image, p.tracks[0] ? coverSources(p.tracks[0]) : [])} className={`${coverSize} shrink-0 rounded-md`} />}
           />
         </li>
       ))}

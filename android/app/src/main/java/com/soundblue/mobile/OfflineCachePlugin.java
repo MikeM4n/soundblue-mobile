@@ -91,19 +91,20 @@ public final class OfflineCachePlugin extends Plugin implements OfflineCache.Lis
     }
 
     @Override
-    public void onFull(int skipped) {
+    public void onFull(int skipped, boolean storage) {
         final JSObject data = new JSObject();
         data.put("skipped", skipped);
+        data.put("storage", storage); // no cupieron por el espacio del teléfono (si no, por el límite de Ajustes)
         notifyListeners("full", data);
     }
 
     // ---- Pedidos de la app ----
 
-    /** «Descargar» una lista o una canción. `plays`: el historial (decide qué se borra primero si no cabe). */
+    /** «Descargar» una lista o una canción (`priority`: al principio de la cola). `plays`: el historial (qué se borra primero). */
     @PluginMethod
     public void download(final PluginCall call) {
         OfflineCache.setPlays(plays(call));
-        OfflineCache.download(getContext(), tracks(call));
+        OfflineCache.download(getContext(), tracks(call), call.getBoolean("priority", false));
         call.resolve();
     }
 
@@ -130,7 +131,7 @@ public final class OfflineCachePlugin extends Plugin implements OfflineCache.Lis
         call.resolve(OfflineCache.list(getContext()));
     }
 
-    /** El límite global (50 a 1000 canciones). Bajarlo borra al momento las que sobran (con el historial de `plays`). */
+    /** El límite global (50 a 10 000 canciones; 0: sin límite). Bajarlo borra al momento las que sobran (según `plays`). */
     @PluginMethod
     public void setLimit(final PluginCall call) {
         OfflineCache.setPlays(plays(call));

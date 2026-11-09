@@ -1,6 +1,7 @@
 import { CloudDownload, Download, LoaderCircle, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useNavigate } from 'react-router'
 import { importPlaylist } from '../../data/playlistImport'
 import { IMPORT_MAX, isPrivateAutoPlaylist, playlistIdFrom } from '../../data/ytmusic'
 import { library } from '../../library/store'
@@ -11,7 +12,7 @@ import { showToast } from '../../ui/toast'
 import { Cover } from '../ui/Cover'
 import { IconButton } from '../ui/IconButton'
 
-type Found = { title: string; image?: string; tracks: Track[] }
+type Found = { title: string; image?: string; tracks: Track[]; source: string }
 
 const PREVIEW = 200 // filas que se dibujan en la vista previa
 
@@ -26,13 +27,17 @@ export function ImportButton({ onClick }: { onClick: () => void }) {
 }
 
 /**
- * «Importar playlist» (solo YouTube y YouTube Music): pegas el enlace, se ve qué canciones trae y «Agregar todas a Me
- * gusta». Sirve cualquier playlist pública o no listada, de cualquier usuario: se lee de YouTube Music y, en Android,
- * también con NewPipe (data/playlistImport.ts), hasta 5000 canciones. Las que ya se sabe que no suenan aquí no se
- * agregan. Una playlist privada no se puede leer.
+ * «Importar playlist» (solo YouTube y YouTube Music): pegas el enlace, se ve qué canciones trae y «Guardar en Tu
+ * biblioteca»: queda como playlist TUYA (nombre, carátula y canciones) para abrirla, reproducirla o descargarla; si ya la
+ * habías importado, se actualiza. Opcional: agregar también sus canciones a Tus me gusta (marcado por defecto si se abrió
+ * desde Tus me gusta) y descargarla. Sirve cualquier playlist pública o no listada, de cualquier usuario: se lee de
+ * YouTube Music y, en Android, también con NewPipe (data/playlistImport.ts), hasta 5000 canciones. Las que ya se sabe que
+ * no suenan aquí no se agregan. Una playlist privada no se puede leer.
  */
-export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
+export function ImportPlaylistDialog({ onClose, toFavorites = false }: { onClose: () => void; toFavorites?: boolean }) {
+  const navigate = useNavigate()
   const [link, setLink] = useState('')
+  const [alsoFavorites, setAlsoFavorites] = useState(toFavorites)
   const [state, setState] = useState<{ loading: true } | { error: string } | { found: Found } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -57,33 +62,32 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
     try {
       const found = await importPlaylist(id)
       const tracks = found.tracks.filter((track) => !onlyInYouTubeMusic.has(track.id))
-      setState(tracks.length ? { found: { ...found, tracks } } : { error: 'Esa playlist no tiene canciones que se puedan escuchar aquí.' })
+      setState(tracks.length ? { found: { ...found, tracks, source: id } } : { error: 'Esa playlist no tiene canciones que se puedan escuchar aquí.' })
     } catch {
       setState({ error: navigator.onLine ? 'No se pudo abrir esa playlist. Revisa que sea pública o «no listada» (las privadas no se pueden leer).' : 'Sin conexión. Inténtalo de nuevo.' })
     }
   }
 
-  const addAll = (found: Found) => {
-    const { added, undo } = library.addFavorites(found.tracks)
-    const already = found.tracks.length - added
-    showToast(
-      added ? `${added === 1 ? '1 canción agregada' : `${added} canciones agregadas`} a Tus me gusta${already ? ` (${already} ya estaban)` : ''}` : 'Todas ya estaban en Tus me gusta',
-      added ? { label: 'Deshacer', run: undo } : undefined,
-    )
-    onClose()
-  }
-
-  // «Agregar y descargar»: a Tus me gusta y, además, a las descargas (para escuchar sin conexión).
-  const addAndDownload = (found: Found) => {
-    const { added, undo } = library.addFavorites(found.tracks)
-    offlineCache.download(found.tracks)
-    const status = offlineCache.get()
-    const wait = !status.online ? ' (cuando vuelva internet)' : status.wifiOnly && !status.wifi ? ' (al conectarte a Wi-Fi)' : ''
-    showToast(
-      `${added ? `${added === 1 ? '1 canción agregada' : `${added} canciones agregadas`} a Tus me gusta` : 'Ya estaban en Tus me gusta'} · se descargan${wait}`,
-      added ? { label: 'Deshacer', run: undo } : undefined,
-      5000,
-    )
+  /** «Guardar en Tu biblioteca» (y, si se pide, descargarla): la playlist propia; con la casilla, también a Tus me gusta. */
+  const save = (found: Found, download: boolean) => {
+    const result = library.importPlaylist(found.title, found.tracks, { image: found.image, source: found.source })
+    if (!result) {
+      setState({
+        error: `No hay espacio en el teléfono para guardar una playlist de ${found.tracks.length} canciones en Tu biblioteca. Ábrela desde Buscar y guárdala con «+» (Playlists guardadas), que no tiene ese límite.`,
+      })
+      return
+    }
+    const parts = [`«${result.playlist.name}» ${result.updated ? 'actualizada' : 'guardada'} en Tu biblioteca`]
+    if (alsoFavorites) {
+      const { added } = library.addFavorites(found.tracks)
+      parts.push(added ? `${added === 1 ? '1 canción' : `${added} canciones`} a Tus me gusta` : 'ya estaban en Tus me gusta')
+    }
+    if (download) {
+      offlineCache.download(result.playlist.tracks)
+      const status = offlineCache.get()
+      parts.push(!status.online ? 'se descarga al volver internet' : status.wifiOnly && !status.wifi ? 'se descarga al conectarte a Wi-Fi' : 'descargándose')
+    }
+    showToast(parts.join(' · '), { label: 'Abrir', run: () => navigate(`/coleccion/playlist/${result.playlist.id}`) }, 5000)
     onClose()
   }
 
@@ -176,22 +180,26 @@ export function ImportPlaylistDialog({ onClose }: { onClose: () => void }) {
               ))}
               {found.tracks.length > PREVIEW && <li className="py-2 text-sm text-texto-sec">…y {found.tracks.length - PREVIEW} más</li>}
             </ol>
+            <label className="mt-3 flex shrink-0 items-center gap-2 text-sm">
+              <input type="checkbox" checked={alsoFavorites} onChange={(e) => setAlsoFavorites(e.target.checked)} className="size-4 accent-acento" />
+              Agregar también sus canciones a Tus me gusta
+            </label>
             <button
               type="button"
-              onClick={() => addAll(found)}
+              onClick={() => save(found, false)}
               className="mt-3 h-12 shrink-0 rounded-full bg-acento px-6 font-bold text-white shadow-lg shadow-acento/30 hover:bg-acento-hover"
             >
-              Agregar todas a Me gusta
+              Guardar en Tu biblioteca
             </button>
-            {/* También descargarlas para escuchar sin conexión (Android). */}
+            {/* También descargarla para escuchar sin conexión (Android). */}
             {offlineCache.enabled && (
               <button
                 type="button"
-                onClick={() => addAndDownload(found)}
+                onClick={() => save(found, true)}
                 className="mt-2 inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full bg-contraste/10 px-6 text-sm font-semibold hover:bg-contraste/15"
               >
                 <CloudDownload className="size-4" aria-hidden="true" />
-                Agregar y descargar
+                Guardar y descargar
               </button>
             )}
           </>

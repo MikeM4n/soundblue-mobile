@@ -14,12 +14,14 @@ import { createRadio } from '../data/radio'
 import { KeyError, QuotaError, youtubeSearch, youtubeSearchEnabled, type YouTubeResults } from '../data/youtube'
 import { ytmSearch, type YtmCard, type YtmSearchResults } from '../data/ytmusic'
 import { player } from '../player/engine'
+import { NewPipe } from '../player/newPipe'
 import type { Track } from '../player/types'
 import { useNowPlaying } from '../player/useNowPlaying'
 
 // Música, sin ningún filtro de popularidad (lo que escribes es lo que buscas, aunque tenga pocas vistas):
 // 1) YouTube Music (su API interna, ver data/ytmusic.ts): canciones, videos, álbumes, artistas y playlists.
-// 2) En la app de Android, a la vez, la búsqueda normal de YouTube con NewPipe: cualquier video (van en «Videos»).
+// 2) En la app de Android, a la vez, la búsqueda normal de YouTube con NewPipe: cualquier video (van en «Videos») y las
+//    playlists públicas de cualquier usuario (van en «Playlists», después de las de YouTube Music).
 // 3) Fuera de Android, si YouTube Music no trae nada y hay clave: la YouTube Data API oficial (data/youtube.ts).
 // «Solo populares» (apagado por defecto) deja solo lo que pasa de 1 millón de vistas.
 // Si todas las fuentes fallan, se muestra un aviso sin inventar resultados.
@@ -46,13 +48,33 @@ function youtubeErrorMessage(error: unknown): string {
   return 'No se pudo buscar en YouTube. Revisa tu conexión.'
 }
 
-/** Junta YouTube Music y la búsqueda de YouTube, sin repetidas (una canción que ya está en «Canciones» no va en «Videos»). */
-function combine(query: string, ytm: YtmSearchResults | null, api: YouTubeResults | null, notice: string | null): MusicResults {
+const MAX_PLAYLISTS = 24 // en Buscar: las de YouTube Music y, después, las públicas de YouTube
+
+/**
+ * Junta YouTube Music y la búsqueda de YouTube, sin repetidas (una canción que ya está en «Canciones» no va en «Videos»;
+ * una playlist que ya trajo YouTube Music no se repite).
+ */
+function combine(query: string, ytm: YtmSearchResults | null, api: YouTubeResults | null, notice: string | null, publicLists: YtmCard[] = []): MusicResults {
   const songs = ytm?.songs.length ? ytm.songs : (api?.songs ?? [])
   const taken = new Set(songs.map((track) => track.id))
   const fromApi = api ? (songs === api.songs ? api.videos : [...api.videos, ...api.songs]) : []
   const videos = [...(ytm?.videos ?? []), ...fromApi].filter((track) => !taken.has(track.id) && !!taken.add(track.id))
-  return { query, songs, videos, albums: ytm?.albums ?? [], artists: ytm?.artists ?? [], playlists: ytm?.playlists ?? [], source: ytm ? 'ytm' : 'api', notice }
+  const seenLists = new Set<string>()
+  const playlists = [...(ytm?.playlists ?? []), ...publicLists].filter((card) => !seenLists.has(card.id) && !!seenLists.add(card.id)).slice(0, MAX_PLAYLISTS)
+  return { query, songs, videos, albums: ytm?.albums ?? [], artists: ytm?.artists ?? [], playlists, source: ytm ? 'ytm' : 'api', notice }
+}
+
+/** Playlists públicas de YouTube (NewPipe, solo Android) como tarjetas que abren su página (/ytm/VL…). */
+async function publicPlaylists(query: string): Promise<YtmCard[]> {
+  if (!isAndroid) return []
+  const { results } = await NewPipe.searchPlaylists({ query })
+  return results.map((list) => ({
+    id: `VL${list.id}`,
+    kind: 'playlist' as const,
+    title: list.title,
+    subtitle: [list.uploader, list.count > 0 ? (list.count === 1 ? '1 canción' : `${list.count} canciones`) : ''].filter(Boolean).join(' • '),
+    image: list.image || undefined,
+  }))
 }
 
 /**
@@ -62,6 +84,7 @@ function combine(query: string, ytm: YtmSearchResults | null, api: YouTubeResult
 async function searchMusic(query: string, onPartial?: (results: MusicResults) => void): Promise<MusicResults> {
   const youtube = isAndroid ? youtubeSearch(query) : null
   youtube?.catch(() => {}) // el error se lee abajo
+  const lists = publicPlaylists(query).catch(() => [] as YtmCard[])
   const ytm = await ytmSearch(query).catch(() => null)
   const empty = !ytm || (!ytm.songs.length && !ytm.videos.length && !ytm.albums.length && !ytm.artists.length && !ytm.playlists.length)
   let api: YouTubeResults | null = null
@@ -80,8 +103,9 @@ async function searchMusic(query: string, onPartial?: (results: MusicResults) =>
       notice = youtubeErrorMessage(error)
     }
   }
-  if (!ytm && !api) notice ??= 'No se pudo conectar con el catálogo. Revisa tu conexión.'
-  return combine(query, ytm, api, notice)
+  const found = await lists
+  if (!ytm && !api && !found.length) notice ??= 'No se pudo conectar con el catálogo. Revisa tu conexión.'
+  return combine(query, ytm, api, notice, found)
 }
 
 /** Buscar: canciones, álbumes, artistas y playlists (que se pueden guardar con «+») de YouTube Music, como en Spotify. */

@@ -11,10 +11,14 @@ import org.schabi.newpipe.extractor.InfoItem;
 import org.schabi.newpipe.extractor.ListExtractor;
 import org.schabi.newpipe.extractor.ServiceList;
 import org.schabi.newpipe.extractor.playlist.PlaylistExtractor;
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo;
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem;
 import org.schabi.newpipe.extractor.search.SearchExtractor;
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory;
 import org.schabi.newpipe.extractor.stream.StreamInfoItem;
 import org.schabi.newpipe.extractor.stream.StreamType;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -31,7 +35,9 @@ public final class NewPipePlugin extends Plugin {
     private static final ExecutorService WORKER = Executors.newFixedThreadPool(2);
     private static final Pattern VIDEO_IN_URL = Pattern.compile("(?:v=|youtu\\.be/)([A-Za-z0-9_-]{11})");
     private static final Pattern PLAYLIST_ID = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
+    private static final Pattern PLAYLIST_IN_URL = Pattern.compile("[?&]list=([A-Za-z0-9_-]+)");
     private static final int SEARCH_RESULTS = 30;
+    private static final int SEARCH_PLAYLISTS = 15;
     private static final int PLAYLIST_MAX = 5000; // canciones como mucho al importar una playlist
 
     /** Búsqueda normal de YouTube (cualquier video, sin importar sus vistas), con las vistas de cada uno. */
@@ -46,6 +52,7 @@ public final class NewPipePlugin extends Plugin {
         WORKER.execute(() -> {
             try {
                 final SearchExtractor extractor = ServiceList.YouTube.getSearchExtractor(query);
+                extractor.fetchPage(); // sin esto getInitialPage no tiene datos (fallaba siempre hasta la 2.0.1)
                 final List<InfoItem> items = extractor.getInitialPage().getItems();
                 final JSArray results = new JSArray();
                 for (final InfoItem item : items) {
@@ -64,6 +71,49 @@ public final class NewPipePlugin extends Plugin {
                 call.resolve(response);
             } catch (final Exception error) {
                 call.reject("NewPipe no pudo buscar en YouTube: " + safe(error.getMessage(), "error de extracción"), error);
+            }
+        });
+    }
+
+    /**
+     * Playlists públicas de YouTube que coinciden con la búsqueda (las de cualquier usuario, también las tuyas si son
+     * públicas), con su dueño, carátula y cuántas canciones tienen. Sin las mezclas automáticas («Mix»).
+     */
+    @PluginMethod
+    public void searchPlaylists(final PluginCall call) {
+        final String query = call.getString("query", "").trim();
+        if (query.isEmpty()) {
+            call.reject("Escribe algo para buscar.");
+            return;
+        }
+
+        WORKER.execute(() -> {
+            try {
+                final SearchExtractor extractor = ServiceList.YouTube.getSearchExtractor(
+                        query, Collections.singletonList(YoutubeSearchQueryHandlerFactory.PLAYLISTS), "");
+                extractor.fetchPage();
+                final JSArray results = new JSArray();
+                final Set<String> seen = new HashSet<>();
+                for (final InfoItem item : extractor.getInitialPage().getItems()) {
+                    if (!(item instanceof PlaylistInfoItem)) continue;
+                    final PlaylistInfoItem playlist = (PlaylistInfoItem) item;
+                    if (playlist.getPlaylistType() != PlaylistInfo.PlaylistType.NORMAL) continue;
+                    final Matcher matcher = PLAYLIST_IN_URL.matcher(safe(playlist.getUrl(), ""));
+                    if (!matcher.find() || !seen.add(matcher.group(1))) continue;
+                    final JSObject result = new JSObject();
+                    result.put("id", matcher.group(1));
+                    result.put("title", safe(playlist.getName(), "Playlist"));
+                    result.put("uploader", safe(playlist.getUploaderName(), ""));
+                    result.put("image", firstImage(playlist.getThumbnails()));
+                    result.put("count", playlist.getStreamCount());
+                    results.put(result);
+                    if (results.length() >= SEARCH_PLAYLISTS) break;
+                }
+                final JSObject response = new JSObject();
+                response.put("results", results);
+                call.resolve(response);
+            } catch (final Exception error) {
+                call.reject("NewPipe no pudo buscar playlists: " + safe(error.getMessage(), "error de extracción"), error);
             }
         });
     }

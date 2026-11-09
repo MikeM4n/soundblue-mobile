@@ -7,6 +7,8 @@ export interface Playlist {
   id: string
   name: string
   tracks: Track[]
+  image?: string // carátula (la de la playlist importada); si no, la de su primera canción
+  source?: string // id de la playlist de YouTube de la que se importó («PL…»): importarla otra vez la actualiza
 }
 
 /** Playlist de YouTube guardada desde Buscar o desde su página («Playlists guardadas»). */
@@ -38,7 +40,13 @@ function load(): LibraryState {
       playlists: Array.isArray(saved?.playlists)
         ? saved.playlists
             .filter((p: Playlist) => p && typeof p.id === 'string' && Array.isArray(p.tracks))
-            .map((p: Playlist) => ({ id: p.id, name: String(p.name || 'Mi playlist'), tracks: p.tracks.filter(isTrack) }))
+            .map((p: Playlist) => ({
+              id: p.id,
+              name: String(p.name || 'Mi playlist'),
+              tracks: p.tracks.filter(isTrack),
+              image: typeof p.image === 'string' && p.image ? p.image : undefined,
+              source: typeof p.source === 'string' && p.source ? p.source : undefined,
+            }))
         : [],
       saved: Array.isArray(saved?.saved) ? saved.saved.filter(isSaved) : [],
     }
@@ -47,14 +55,17 @@ function load(): LibraryState {
   }
 }
 
-function commit(next: LibraryState) {
+/** Guarda y avisa. False si el navegador no la pudo guardar (almacenamiento lleno): queda solo mientras la app esté abierta. */
+function commit(next: LibraryState): boolean {
   state = next
+  let stored = true
   try {
     localStorage.setItem(KEY, JSON.stringify(state))
   } catch {
-    /* almacenamiento lleno o bloqueado */
+    stored = false // almacenamiento lleno o bloqueado
   }
   listeners.forEach((listener) => listener())
+  return stored
 }
 
 const insertAt = <T,>(list: T[], index: number, item: T) => {
@@ -118,6 +129,23 @@ export const library = {
   },
   removeSaved(id: string) {
     commit({ ...state, saved: state.saved.filter((p) => p.id !== id) })
+  },
+
+  /**
+   * «Importar playlist»: la guarda como playlist TUYA en Tu biblioteca (nombre, carátula y canciones), para abrirla,
+   * reproducirla o descargarla. Si ya la habías importado (mismo origen), se actualiza en vez de duplicarse. Null si no
+   * cabe en el almacenamiento del navegador (entonces no queda nada a medias).
+   */
+  importPlaylist(name: string, tracks: readonly Track[], { image, source }: { image?: string; source?: string }): { playlist: Playlist; updated: boolean } | null {
+    const before = state
+    const existing = source ? state.playlists.find((p) => p.source === source) : undefined
+    const playlist: Playlist = { id: existing?.id ?? newId(), name: name.trim() || 'Playlist importada', tracks: [...tracks], image, source }
+    const playlists = existing ? state.playlists.map((p) => (p.id === existing.id ? playlist : p)) : [...state.playlists, playlist]
+    if (!commit({ ...state, playlists })) {
+      commit(before)
+      return null
+    }
+    return { playlist, updated: !!existing }
   },
 
   createPlaylist(name: string): Playlist {
