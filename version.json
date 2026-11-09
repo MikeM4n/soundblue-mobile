@@ -1,6 +1,6 @@
 {
-  "versionCode": 20001,
-  "versionName": "2.0.1",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.0.1/SoundBlue.apk",
-  "changelog": "Descargas 100 % manuales: ya no se guardan solas canciones de Selecciones rápidas, solo lo que tú descargas. Y una cola de descargas real: se baja una canción a la vez, en el orden en que lo pediste, y las listas que esperan su turno muestran «En cola» con un reloj."
+  "versionCode": 20002,
+  "versionName": "2.0.2",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.0.2/SoundBlue.apk",
+  "changelog": "Buscar encuentra playlists públicas de YouTube y por fin trae videos de YouTube; las playlists que importas quedan en Tu biblioteca; descargas sin límite (solo el espacio del teléfono); botón Descargar en Sonando ahora; y Selecciones rápidas se renueva cuando tocas una canción."
 }
