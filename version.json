@@ -1,6 +1,6 @@
 {
-  "versionCode": 20002,
-  "versionName": "2.0.2",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.0.2/SoundBlue.apk",
-  "changelog": "Buscar encuentra playlists públicas de YouTube y por fin trae videos de YouTube; las playlists que importas quedan en Tu biblioteca; descargas sin límite (solo el espacio del teléfono); botón Descargar en Sonando ahora; y Selecciones rápidas se renueva cuando tocas una canción."
+  "versionCode": 20100,
+  "versionName": "2.1.0",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.0/SoundBlue.apk",
+  "changelog": "Transición suave: activa en Ajustes → Reproducción el Crossfade de 10 s y el final de cada canción se mezcla con el inicio de la siguiente, como en Spotify, también con la pantalla bloqueada."
 }
