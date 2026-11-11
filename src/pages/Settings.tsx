@@ -17,7 +17,7 @@ const THEMES: { key: ThemeChoice; label: string; note: string }[] = [
 ]
 
 export function Settings() {
-  const { hideViewToggle, dynamicQueue, theme } = useSettings()
+  const { hideViewToggle, dynamicQueue, crossfade, theme } = useSettings()
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 pt-6 pb-10">
       <h1 className="text-2xl font-bold md:text-3xl">Ajustes</h1>
@@ -35,9 +35,10 @@ export function Settings() {
         </div>
       </section>
       <section aria-labelledby="ajustes-sonando" className="rounded-lg bg-tarjeta p-4">
-        <h2 id="ajustes-sonando" className="text-lg font-bold">Sonando ahora</h2>
+        <h2 id="ajustes-sonando" className="text-lg font-bold">Reproducción</h2>
         <Switch className="mt-3" label="Mostrar «Canción | Letra»" note="Si lo ocultas, siempre se ve la carátula (sin la letra). La música suena igual." checked={!hideViewToggle} onChange={(on) => settings.set({ hideViewToggle: !on })} />
         <Switch className="mt-4" label="Fila Dinámica" note="La cola nunca baja de 10: si quitas una o se acaba la lista, entran canciones de «Recomendadas». También se cambia en «Próximas en sonar»." checked={dynamicQueue} onChange={(on) => settings.set({ dynamicQueue: on })} />
+        <Switch className="mt-4" label="Transición suave (Crossfade 10s)" note="Los últimos 10 segundos de cada canción se mezclan con el inicio de la siguiente, también con la pantalla bloqueada. Apagada, las canciones cambian como siempre." checked={crossfade} onChange={(on) => settings.set({ crossfade: on })} />
       </section>
       <OfflineSection />
       <section aria-labelledby="ajustes-generos" className="rounded-lg bg-tarjeta p-4">

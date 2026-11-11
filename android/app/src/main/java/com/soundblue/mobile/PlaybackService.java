@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
@@ -107,6 +108,15 @@ public final class PlaybackService extends MediaSessionService {
     /** ▶ del widget con la app cerrada: Android arranca el servicio en primer plano y suena la última cola guardada. */
     public static final String ACTION_RESUME_FROM_WIDGET = "com.soundblue.mobile.RESUME_FROM_WIDGET";
     private static final String QUEUE_PREFS = "soundblue_queue"; // la cola, dónde iba y las que te gustan
+    // Transición suave (crossfade): los últimos 10 s de una canción se mezclan con el inicio de la siguiente.
+    private static final String CROSSFADE_KEY = "crossfade_enabled"; // Ajustes → «Transición suave»
+    private static final long CROSSFADE_MS = 10_000;
+    private static final long FADE_TICK_MS = 100; // el volumen de las dos se ajusta 10 veces por segundo
+    private static final long FADE_WATCH_MS = 500; // cada cuánto se mira si ya faltan 10 s
+    private static final AudioAttributes AUDIO_ATTRIBUTES = new AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .build();
     private static final String WIDGET_PREFS = "soundblue_widget"; // la última canción (widget/SoundBlueWidgetState.kt)
     private static final String IDLE_CHANNEL = "soundblue_idle";
     private static final int IDLE_NOTIFICATION_ID = 0x50B1;
@@ -176,6 +186,32 @@ public final class PlaybackService extends MediaSessionService {
     private int savedRepeat = Player.REPEAT_MODE_OFF;
     private final Runnable offlineProbe = this::probeOnline;
     private boolean backupBlocked; // la caché no suena (falló entera): no se vuelve a ella hasta que haya red o elijas otra
+    // Transición suave: un solo ExoPlayer no puede sonar dos canciones a la vez, así que hay dos. `player` es el de la
+    // sesión (notificación, controles, la cola). Cuando a la canción le quedan 10 s, `spare` arranca la siguiente en
+    // volumen 0 y cada 100 ms uno baja y el otro sube. Al terminar, `spare` pasa a ser `player` (sin cortes: ya venía
+    // sonando) y el que era `player` queda de repuesto para la próxima. Todo aquí, en el servicio: sigue con la pantalla
+    // bloqueada y la app dormida.
+    private boolean crossfade; // el ajuste (SharedPreferences: crossfade_enabled)
+    private DataSource.Factory dataSource;
+    private ExoPlayer spare; // el otro reproductor (se crea la primera vez que hace falta)
+    private boolean fading; // mezclando: `player` baja y `spare` sube
+    // La canción que se va (por su id, no por su lugar: si en plena mezcla se recorta lo que ya sonó, el lugar cambia).
+    private String fadeFromId;
+    private float userVolume = 1f; // el volumen que pidió la app: la mezcla lo reparte entre las dos
+    private String noFadeFor; // canción cuya siguiente no cargó al mezclar: termina normal, sin reintentar la mezcla
+    private final PlayerListener playerListener = new PlayerListener();
+    private final Player.Listener spareListener = new Player.Listener() {
+        @Override
+        public void onPlayerError(PlaybackException error) {
+            // La siguiente no se pudo cargar: sin mezcla; al terminar la que suena, el cambio normal se encarga del error.
+            Log.w(TAG, "Transición suave: la siguiente no cargó", error);
+            final MediaItem leaving = player.getCurrentMediaItem();
+            noFadeFor = leaving == null ? null : leaving.mediaId; // con esta canción no se vuelve a intentar
+            cancelFade();
+        }
+    };
+    private final Runnable fadeWatch = this::watchForFade;
+    private final Runnable fadeTick = this::fadeStep;
 
     static PlaybackService get() {
         return instance;
@@ -191,21 +227,9 @@ public final class PlaybackService extends MediaSessionService {
         StreamResolver.init();
         OfflineCache.init(this);
 
-        final DataSource.Factory dataSource =
-                new ResolvingDataSource.Factory(new DefaultDataSource.Factory(this), PlaybackService::resolve);
-        player = new ExoPlayer.Builder(this)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSource).setLoadErrorHandlingPolicy(new LoadErrorPolicy()))
-                .setAudioAttributes(new AudioAttributes.Builder()
-                        .setUsage(C.USAGE_MEDIA)
-                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                        .build(), true)
-                // Audífonos o Bluetooth del carro desconectados: pausa (no sigue por el altavoz del celular).
-                .setHandleAudioBecomingNoisy(true)
-                .setWakeMode(C.WAKE_MODE_NETWORK)
-                // «Anterior» (app, notificación, audífonos, reloj): pasados 3 s reinicia la canción; antes, va a la anterior.
-                .setMaxSeekToPreviousPositionMs(3000)
-                .build();
-        player.addListener(new PlayerListener());
+        dataSource = new ResolvingDataSource.Factory(new DefaultDataSource.Factory(this), PlaybackService::resolve);
+        player = buildPlayer(true);
+        player.addListener(playerListener);
 
         final Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
         final PendingIntent openApp = PendingIntent.getActivity(this, 0, launch,
@@ -226,12 +250,29 @@ public final class PlaybackService extends MediaSessionService {
         final SharedPreferences queuePrefs = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE);
         likedIds.addAll(queuePrefs.getStringSet("liked", new HashSet<>()));
         endless = queuePrefs.getBoolean("endless", true); // también con la app cerrada (el widget)
+        crossfade = queuePrefs.getBoolean(CROSSFADE_KEY, false);
         loadRecent(queuePrefs);
         // Si la app está abierta (p. ej. el widget arrancó la música), se entera desde ya de lo que pasa aquí.
         events = PlaybackPlugin.listener();
         instance = this;
         deliverPendingLikes();
         updateWidget();
+    }
+
+    /**
+     * Un reproductor. `audioFocus`: el de la sesión pide el foco de audio (pausa con una llamada); el de repuesto no, o al
+     * arrancar le quitaría el foco al que suena y lo pausaría en plena mezcla.
+     */
+    private ExoPlayer buildPlayer(boolean audioFocus) {
+        return new ExoPlayer.Builder(this)
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSource).setLoadErrorHandlingPolicy(new LoadErrorPolicy()))
+                .setAudioAttributes(AUDIO_ATTRIBUTES, audioFocus)
+                // Audífonos o Bluetooth del carro desconectados: pausa (no sigue por el altavoz del celular).
+                .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(C.WAKE_MODE_NETWORK)
+                // «Anterior» (app, notificación, audífonos, reloj): pasados 3 s reinicia la canción; antes, va a la anterior.
+                .setMaxSeekToPreviousPositionMs(3000)
+                .build();
     }
 
     @Override
@@ -251,6 +292,7 @@ public final class PlaybackService extends MediaSessionService {
     @Override
     public void onTaskRemoved(@Nullable Intent rootIntent) {
         // Cerrar la app desde «recientes» detiene la música, como antes.
+        cancelFade(); // también la que estaba entrando (no es de la sesión: nadie más la pausaría)
         pauseAllPlayersAndStopSelf();
     }
 
@@ -260,6 +302,8 @@ public final class PlaybackService extends MediaSessionService {
         events = null;
         main.removeCallbacks(autoExtend);
         main.removeCallbacks(offlineProbe);
+        main.removeCallbacks(fadeWatch);
+        cancelFade();
         SoundBlueWidgetState.idle(this); // sin servicio no hay nada que controlar: queda la última canción, en pausa
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
@@ -268,6 +312,7 @@ public final class PlaybackService extends MediaSessionService {
         }
         saveQueue(); // con la posición exacta: el widget puede seguir desde aquí
         player.release();
+        if (spare != null) spare.release();
         session.release();
         super.onDestroy();
     }
@@ -298,6 +343,7 @@ public final class PlaybackService extends MediaSessionService {
     void load(List<MediaItem> before, MediaItem current, List<MediaItem> after, boolean endless, long startMs,
               boolean autoplay, float volume, int generation) {
         this.generation = generation;
+        cancelFade(); // elegiste otra: la mezcla en curso se deja
         retried = null;
         skippedFailed = null;
         waitingForNetwork = false;
@@ -318,6 +364,7 @@ public final class PlaybackService extends MediaSessionService {
 
     private void loadItems(List<MediaItem> before, MediaItem current, List<MediaItem> after, long startMs,
                            boolean autoplay, float volume) {
+        userVolume = volume;
         player.setVolume(volume);
         final int target = indexNearCurrent(current.mediaId);
         if (target == C.INDEX_UNSET) {
@@ -346,6 +393,11 @@ public final class PlaybackService extends MediaSessionService {
         }
         final MediaItem current = player.getCurrentMediaItem();
         if (current == null || !current.mediaId.equals(currentId)) return;
+        // Cambió la que seguía (la quitaste, pusiste otra «a continuación»): la que ya estaba entrando no es la que toca.
+        if (fading) {
+            final MediaItem entering = spare.getCurrentMediaItem();
+            if (after.isEmpty() || entering == null || !after.get(0).mediaId.equals(entering.mediaId)) cancelFade();
+        }
         fromApp(current, after, endless);
         replaceBefore(before);
         replaceAfter(after);
@@ -371,15 +423,18 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     void pause() {
+        cancelFade(); // en pausa no se mezcla: al seguir, si aún faltan menos de 10 s, la transición empieza de nuevo
         player.pause();
     }
 
     void seekTo(long positionMs) {
+        cancelFade();
         player.seekTo(positionMs);
     }
 
     void previous() {
         if (player.getMediaItemCount() == 0) return;
+        cancelFade();
         player.seekToPrevious();
         if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
     }
@@ -387,15 +442,28 @@ public final class PlaybackService extends MediaSessionService {
     /** ⏭ en modo offline: la siguiente de la caché (fuera de él, «siguiente» lo decide la app con su cola). */
     void next() {
         if (!player.hasNextMediaItem()) return;
+        cancelFade();
         player.seekToNextMediaItem();
         if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
     }
 
     void setVolume(float volume) {
-        player.setVolume(volume);
+        userVolume = volume;
+        if (!fading) player.setVolume(volume); // mezclando, lo aplica el siguiente ajuste (fadeStep), repartido entre las dos
+    }
+
+    /** Ajustes → «Transición suave» (también lo deja guardado para cuando el servicio arranque solo, p. ej. desde el widget). */
+    static void saveCrossfade(Context context, boolean enabled) {
+        context.getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit().putBoolean(CROSSFADE_KEY, enabled).apply();
+        final PlaybackService service = instance;
+        if (service == null) return;
+        service.crossfade = enabled;
+        if (!enabled) service.cancelFade();
+        else if (service.player.isPlaying()) service.scheduleFadeWatch();
     }
 
     void setRepeatOne(boolean enabled) {
+        if (enabled) cancelFade(); // «repetir una»: la misma canción vuelve a empezar, sin mezcla
         final int mode = enabled ? Player.REPEAT_MODE_ONE : Player.REPEAT_MODE_OFF;
         if (offline) savedRepeat = mode; // la caché sigue en bucle; se aplica al volver a la cola
         else player.setRepeatMode(mode);
@@ -825,6 +893,7 @@ public final class PlaybackService extends MediaSessionService {
         final MediaItem item = player.getCurrentMediaItem();
         if (item == null) return;
         final String videoId = item.mediaId;
+        cancelFade(); // la que suena falló: sin mezcla; lo de abajo decide qué sigue
         if (offline) {
             onOfflineError(item, error);
             return;
@@ -864,6 +933,135 @@ public final class PlaybackService extends MediaSessionService {
         player.prepare();
     }
 
+    // ---- Transición suave (crossfade) ----
+
+    private void scheduleFadeWatch() {
+        main.removeCallbacks(fadeWatch);
+        if (crossfade && !fading) main.postDelayed(fadeWatch, FADE_WATCH_MS);
+    }
+
+    /**
+     * Mientras suena (cada medio segundo): ¿le quedan 10 s o menos a la canción? Entonces empieza la mezcla. No hay
+     * mezcla sin siguiente en la cola, con «repetir una», en el modo offline (la caché en bucle) ni en canciones de menos
+     * de 20 s (no habría qué mezclar).
+     */
+    private void watchForFade() {
+        if (!crossfade || fading || !player.isPlaying()) return;
+        final MediaItem leaving = player.getCurrentMediaItem();
+        final boolean blocked = leaving != null && leaving.mediaId.equals(noFadeFor);
+        final long duration = player.getDuration();
+        final long remaining = duration - player.getCurrentPosition();
+        if (!blocked && duration != C.TIME_UNSET && duration >= CROSSFADE_MS * 2 && remaining <= CROSSFADE_MS && remaining > FADE_TICK_MS * 5
+                && !offline && player.getRepeatMode() == Player.REPEAT_MODE_OFF && player.hasNextMediaItem()) {
+            startFade();
+            return;
+        }
+        main.postDelayed(fadeWatch, FADE_WATCH_MS);
+    }
+
+    /**
+     * Empieza la mezcla: el reproductor de repuesto recibe la misma cola, arranca la SIGUIENTE en volumen 0 (su URL ya la
+     * pre-cargó NewPipe, o es un archivo descargado) y cada 100 ms fadeStep reparte el volumen.
+     */
+    private void startFade() {
+        final int next = player.getNextMediaItemIndex();
+        if (next == C.INDEX_UNSET) return;
+        if (spare == null) spare = buildPlayer(false);
+        final List<MediaItem> items = new ArrayList<>();
+        for (int i = 0; i < player.getMediaItemCount(); i++) items.add(player.getMediaItemAt(i));
+        fading = true;
+        final MediaItem leaving = player.getCurrentMediaItem();
+        fadeFromId = leaving == null ? null : leaving.mediaId;
+        spare.addListener(spareListener);
+        spare.setVolume(0f);
+        spare.setRepeatMode(player.getRepeatMode());
+        spare.setMediaItems(items, next, 0);
+        spare.prepare();
+        spare.setPlayWhenReady(true);
+        main.removeCallbacks(fadeTick);
+        main.post(fadeTick);
+    }
+
+    /**
+     * Un ajuste de la mezcla (cada 100 ms): la que se va suena a (lo que le queda / 10 s) y la que entra a (1 − eso), las
+     * dos sobre el volumen que pidió la app. Cuando a la que se va ya no le queda nada, termina (finishFade).
+     */
+    private void fadeStep() {
+        if (!fading) return;
+        if (player.getDuration() == C.TIME_UNSET) {
+            cancelFade();
+            return;
+        }
+        final long remaining = Math.max(0, player.getDuration() - player.getCurrentPosition());
+        final MediaItem now = player.getCurrentMediaItem();
+        if (now == null || !now.mediaId.equals(fadeFromId) || player.getPlaybackState() == Player.STATE_ENDED
+                || remaining <= FADE_TICK_MS) {
+            finishFade();
+            return;
+        }
+        final float leaving = Math.min(1f, remaining / (float) CROSSFADE_MS);
+        player.setVolume(userVolume * leaving);
+        spare.setVolume(userVolume * (1f - leaving));
+        main.postDelayed(fadeTick, FADE_TICK_MS);
+    }
+
+    /**
+     * Fin de la mezcla: la que entraba queda al 100 % y su reproductor pasa a ser el de la sesión (notificación, controles,
+     * la cola), sin cortes porque ya venía sonando. El otro se detiene y queda de repuesto. La app se entera como de
+     * cualquier cambio de canción («terminó la anterior»).
+     */
+    private void finishFade() {
+        if (!fading) return;
+        fading = false;
+        main.removeCallbacks(fadeTick);
+        final ExoPlayer old = player;
+        final ExoPlayer entering = spare;
+        entering.removeListener(spareListener);
+        old.removeListener(playerListener);
+        entering.setVolume(userVolume);
+        player = entering;
+        spare = old;
+        player.addListener(playerListener);
+        // Primero la sesión pasa a seguir a la que entra (así la notificación nunca ve un reproductor detenido); después el
+        // foco de audio cambia de manos y la que se fue se detiene.
+        session.setPlayer(player);
+        old.setAudioAttributes(AUDIO_ATTRIBUTES, false);
+        player.setAudioAttributes(AUDIO_ATTRIBUTES, true);
+        old.stop();
+        old.clearMediaItems();
+        noFadeFor = null;
+        final MediaItem item = player.getCurrentMediaItem();
+        if (item != null) {
+            retried = null;
+            skippedFailed = null;
+            advancing = false;
+            failures = 0;
+            remember(item.mediaId);
+            prefetchNext();
+            main.post(this::trimBehind);
+            if (events != null) events.onTrackChanged(item.mediaId, "auto", autoIds.contains(item.mediaId) ? appLastId : null);
+            checkQueue(true);
+        }
+        notifyState();
+        updateWidget();
+        saveQueue();
+        if (player.isPlaying()) scheduleFadeWatch();
+    }
+
+    /** Deja la mezcla a medias: la que entraba se calla y la que suena vuelve a su volumen (como si no hubiera empezado). */
+    private void cancelFade() {
+        if (!fading) return;
+        fading = false;
+        main.removeCallbacks(fadeTick);
+        if (spare != null) {
+            spare.removeListener(spareListener);
+            spare.stop();
+            spare.clearMediaItems();
+        }
+        player.setVolume(userVolume);
+        if (player.isPlaying()) scheduleFadeWatch();
+    }
+
     // ---- Modo offline ----
 
     /**
@@ -874,6 +1072,7 @@ public final class PlaybackService extends MediaSessionService {
     private boolean enterOffline(boolean fromExtractor) {
         if (offline) return true;
         if (backupBlocked || player.getCurrentMediaItem() == null) return false;
+        cancelFade();
         final List<MediaItem> backup = OfflineCache.mediaItems(this);
         if (backup.isEmpty()) return false;
         Collections.shuffle(backup);
@@ -1085,6 +1284,15 @@ public final class PlaybackService extends MediaSessionService {
         @Override
         public void onMediaItemTransition(@Nullable MediaItem item, int reason) {
             if (item == null) return;
+            if (fading) {
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                    // La que se iba terminó antes del último ajuste: la mezcla acaba aquí (el otro ya suena la siguiente).
+                    main.post(PlaybackService.this::finishFade);
+                    return;
+                }
+                cancelFade(); // saltaste a otra a mano (notificación, audífonos): sin mezcla
+            }
+            noFadeFor = null;
             retried = null;
             if (offline) {
                 // La caché offline: la app no la sigue como su cola (le llega por «state», con offline: true).
@@ -1110,7 +1318,20 @@ public final class PlaybackService extends MediaSessionService {
                 failures = 0;
                 prefetchNext();
             }
+            // Transición suave: sonando, se vigila cuándo faltan 10 s. En pausa (o si una llamada quitó el foco de audio)
+            // la mezcla se deja: la que estaba entrando no debe seguir sola. Cargando (buffer) no se toca.
+            if (isPlaying) scheduleFadeWatch();
+            else {
+                main.removeCallbacks(fadeWatch);
+                if (fading && player.getPlaybackState() == Player.STATE_READY) cancelFade();
+            }
             notifyState();
+        }
+
+        @Override
+        public void onPositionDiscontinuity(Player.PositionInfo oldPosition, Player.PositionInfo newPosition, int reason) {
+            // Adelantaste o atrasaste la canción (también desde la notificación): la mezcla en curso ya no corresponde.
+            if (fading && reason == Player.DISCONTINUITY_REASON_SEEK) cancelFade();
         }
 
         @Override

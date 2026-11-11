@@ -1,5 +1,12 @@
 # Historial de cambios
 
+## 2026-11-11 — v2.1.0
+
+- Transición suave (crossfade de 10 s), como en Spotify: Ajustes → «Reproducción» (la sección que se llamaba «Sonando ahora») → «Transición suave (Crossfade 10s)». Apagada por defecto; se guarda en localStorage y en el teléfono (SharedPreferences `crossfade_enabled`).
+  - La hace el reproductor nativo, así que funciona con la pantalla bloqueada y la app dormida: cuando a la canción le quedan 10 s, un segundo ExoPlayer arranca la siguiente en volumen 0 y cada 100 ms una baja (lo que le queda / 10 s) y la otra sube (1 − eso). Al terminar, el segundo pasa a ser el reproductor de la sesión (notificación, controles, cola), sin cortes, y el primero queda de repuesto.
+  - No hay mezcla sin siguiente en la cola, con «repetir una», en el modo offline ni en canciones de menos de 20 s. Pausar, adelantar, saltar de canción, elegir otra o cambiar la que sigue dejan la mezcla en curso (al seguir sonando, si aún faltan menos de 10 s, empieza de nuevo). Si la siguiente no carga, la canción termina normal.
+  - Apagada, todo funciona como antes (el segundo reproductor ni se crea).
+
 ## 2026-11-09 — v2.0.2
 
 - Buscar encuentra playlists públicas de YouTube de cualquier usuario (también las tuyas, si son públicas): además de las de YouTube Music, en Android se buscan con NewPipe (filtro «Playlists» de YouTube, sin «Mix») y se abren en su página, donde se pueden guardar, reproducir o descargar. Arreglado de paso: la búsqueda de YouTube con NewPipe fallaba siempre (faltaba `fetchPage()` antes de leer los resultados), así que los «Videos» de YouTube ahora sí aparecen.

@@ -10,10 +10,13 @@ export type ThemeChoice = 'sistema' | 'claro' | 'oscuro'
 export interface Settings {
   hideViewToggle: boolean // ocultar «Canción | Letra» en «Sonando ahora» (queda siempre la carátula)
   dynamicQueue: boolean // Fila Dinámica: la cola nunca baja de 10 (pasan canciones de «Recomendadas»)
+  // Transición suave: los últimos 10 s de cada canción se mezclan con el inicio de la siguiente (lo hace el reproductor
+  // nativo de Android, también con la pantalla bloqueada; ver PlaybackService). Apagada por defecto.
+  crossfade: boolean
   theme: ThemeChoice
 }
 
-const DEFAULTS: Settings = { hideViewToggle: false, dynamicQueue: true, theme: 'oscuro' }
+const DEFAULTS: Settings = { hideViewToggle: false, dynamicQueue: true, crossfade: false, theme: 'oscuro' }
 
 function read(): Settings {
   try {
