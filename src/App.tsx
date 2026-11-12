@@ -4,13 +4,16 @@ import { Route, Routes, useLocation, type Location } from 'react-router'
 import { genreIndex } from './data/genreIndex'
 import { onboarding } from './lib/onboarding'
 import { startUpdateChecks } from './lib/updates'
+import { MergeDialog } from './components/account/MergeDialog'
 import { ApkUpdatePrompt } from './components/layout/ApkUpdatePrompt'
 import { AppLayout } from './components/layout/AppLayout'
 import { NowPlayingSheet } from './components/player/NowPlayingSheet'
+import { account } from './cloud/account'
 import { startNativeWidget } from './player/nativeWidget'
 import { usePlayerShortcuts } from './player/usePlayerShortcuts'
 import { Home } from './pages/Home'
 
+const AccountPage = lazy(() => import('./pages/Account').then((m) => ({ default: m.AccountPage })))
 const Collection = lazy(() => import('./pages/Collection').then((m) => ({ default: m.Collection })))
 const Help = lazy(() => import('./pages/Help').then((m) => ({ default: m.Help })))
 const ModePage = lazy(() => import('./pages/Mode').then((m) => ({ default: m.ModePage })))
@@ -31,6 +34,7 @@ export default function App() {
     // En la web, si hay una versión más nueva publicada, se recarga sola. En el APK la avisa ApkUpdatePrompt.
     if (import.meta.env.PROD && !Capacitor.isNativePlatform()) startUpdateChecks()
     startNativeWidget() // el corazón del widget de Android
+    account.start() // Mi Cuenta: si había sesión, sigue sincronizando tu música con la nube (solo Android)
     // El índice de géneros de la radio (se guarda 7 días): se arma en segundo plano, después de cargar Inicio.
     const timer = window.setTimeout(() => void genreIndex(), 4000)
     return () => window.clearTimeout(timer)
@@ -58,6 +62,7 @@ export default function App() {
           <Route path="cola" element={<Queue />} />
           <Route path="ayuda" element={<Help />} />
           <Route path="ajustes" element={<Settings />} />
+          <Route path="cuenta" element={<AccountPage />} />
           <Route path="modo/:modo" element={<ModePage />} />
           <Route path="ytm/:browseId" element={<YtmPage />} />
           <Route path="gustos" element={<Tastes />} />
@@ -67,6 +72,7 @@ export default function App() {
       </Routes></Suspense>
       {location.pathname === '/reproduciendo' && <NowPlayingSheet />}
       <ApkUpdatePrompt />
+      <MergeDialog />
     </>
   )
 }
