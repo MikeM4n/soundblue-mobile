@@ -10,17 +10,25 @@ export type ThemeChoice = 'sistema' | 'claro' | 'oscuro'
 export interface Settings {
   hideViewToggle: boolean // ocultar «Canción | Letra» en «Sonando ahora» (queda siempre la carátula)
   dynamicQueue: boolean // Fila Dinámica: la cola nunca baja de 10 (pasan canciones de «Recomendadas»)
-  // Transición suave: los últimos 10 s de cada canción se mezclan con el inicio de la siguiente (lo hace el reproductor
+  // Transición suave: los últimos segundos de cada canción se mezclan con el inicio de la siguiente (lo hace el reproductor
   // nativo de Android, también con la pantalla bloqueada; ver PlaybackService). Apagada por defecto.
   crossfade: boolean
+  crossfadeSeconds: CrossfadeSeconds // cuánto dura la mezcla: 5, 10 (por defecto), 15 o 20 s
   theme: ThemeChoice
 }
 
-const DEFAULTS: Settings = { hideViewToggle: false, dynamicQueue: true, crossfade: false, theme: 'oscuro' }
+/** Lo que puede durar la transición suave (Ajustes → Reproducción). */
+export const CROSSFADE_OPTIONS = [5, 10, 15, 20] as const
+export type CrossfadeSeconds = (typeof CROSSFADE_OPTIONS)[number]
+
+const DEFAULTS: Settings = { hideViewToggle: false, dynamicQueue: true, crossfade: false, crossfadeSeconds: 10, theme: 'oscuro' }
 
 function read(): Settings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') }
+    const saved: Settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? '{}') }
+    // Una duración que no es de las que ofrece Ajustes (dato dañado o de otra versión) vuelve a 10 s.
+    if (!CROSSFADE_OPTIONS.includes(saved.crossfadeSeconds)) saved.crossfadeSeconds = DEFAULTS.crossfadeSeconds
+    return saved
   } catch {
     return DEFAULTS
   }

@@ -62,7 +62,7 @@ interface NativePlayerPlugin {
   next(): Promise<void>
   setVolume(options: { volume: number }): Promise<void>
   setRepeatOne(options: { enabled: boolean }): Promise<void>
-  setCrossfade(options: { enabled: boolean }): Promise<void>
+  setCrossfade(options: { enabled: boolean; seconds: number }): Promise<void>
   setLiked(options: { id: string; liked: boolean }): Promise<void>
   getState(): Promise<NativeState>
   addListener(eventName: 'state', listener: (state: NativeState) => void): Promise<PluginListenerHandle>
@@ -216,11 +216,11 @@ export class NativePlayerBackend implements MediaBackend {
   getDuration() { return this.duration }
 
   /**
-   * Ajustes → «Transición suave (Crossfade 10s)»: se le avisa al reproductor nativo, que lo guarda (SharedPreferences) y
-   * hace la mezcla él solo, también con la pantalla bloqueada. No hace falta tener nada cargado.
+   * Ajustes → «Transición suave»: si está encendida y cuántos segundos dura. Se le avisa al reproductor nativo, que lo
+   * guarda (SharedPreferences) y hace la mezcla él solo, también con la pantalla bloqueada. No hace falta tener nada cargado.
    */
-  setCrossfade(enabled: boolean) {
-    if (Capacitor.getPlatform() === 'android') void NativePlayer.setCrossfade({ enabled }).catch(ignore)
+  setCrossfade(enabled: boolean, seconds: number) {
+    if (Capacitor.getPlatform() === 'android') void NativePlayer.setCrossfade({ enabled, seconds }).catch(ignore)
   }
 
   /** Si la canción está en Tus me gusta: el corazón del widget. Antes de cargar nada no hay widget que pintar. */

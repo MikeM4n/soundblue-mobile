@@ -185,14 +185,15 @@ export class PlayerEngine {
     window.addEventListener('online', () => this.onOnline())
     // Al encender la Fila Dinámica, la cola se completa enseguida (y el reproductor nativo sabe si puede seguir solo).
     // «Transición suave» también va al nativo: él hace la mezcla (aquí no se toca el volumen).
-    let crossfade = settings.get().crossfade
-    this.audio.setCrossfade(crossfade)
+    const crossfadeOf = () => `${settings.get().crossfade}|${settings.get().crossfadeSeconds}`
+    let crossfade = crossfadeOf()
+    this.audio.setCrossfade(settings.get().crossfade, settings.get().crossfadeSeconds)
     settings.subscribe(() => {
       void this.extendRadio()
       this.syncNative()
-      if (settings.get().crossfade !== crossfade) {
-        crossfade = settings.get().crossfade
-        this.audio.setCrossfade(crossfade)
+      if (crossfadeOf() !== crossfade) {
+        crossfade = crossfadeOf()
+        this.audio.setCrossfade(settings.get().crossfade, settings.get().crossfadeSeconds)
       }
     })
   }

@@ -1,5 +1,9 @@
 # Historial de cambios
 
+## 2026-11-12 — v2.1.1
+
+- Transición suave configurable: en Ajustes → «Reproducción», con «Transición suave (Crossfade)» encendida aparece «Duración de la transición» (menú desplegable): 5, 10 (por defecto), 15 o 20 segundos. Se guarda en localStorage (`crossfadeSeconds`) y en el teléfono (SharedPreferences `crossfade_duration`, en ms). El reproductor nativo usa esa duración para empezar la mezcla y en las fórmulas de volumen (lo que le queda / duración elegida); si la cambias en plena mezcla, se aplica al siguiente ajuste. Las canciones que duran menos del doble de la mezcla no se mezclan.
+
 ## 2026-11-11 — v2.1.0
 
 - Transición suave (crossfade de 10 s), como en Spotify: Ajustes → «Reproducción» (la sección que se llamaba «Sonando ahora») → «Transición suave (Crossfade 10s)». Apagada por defecto; se guarda en localStorage y en el teléfono (SharedPreferences `crossfade_enabled`).

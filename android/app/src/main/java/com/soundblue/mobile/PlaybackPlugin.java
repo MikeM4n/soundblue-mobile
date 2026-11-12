@@ -154,14 +154,16 @@ public final class PlaybackPlugin extends Plugin implements PlaybackService.Even
     }
 
     /**
-     * Ajustes → «Transición suave (Crossfade 10s)». Se guarda en SharedPreferences (crossfade_enabled) aunque el
-     * reproductor no esté en marcha (no lo arranca): lo lee al crearse; si ya suena, se aplica al momento.
+     * Ajustes → «Transición suave»: si está encendida y cuánto dura (`seconds`: 5, 10, 15 o 20). Se guarda en
+     * SharedPreferences (crossfade_enabled, crossfade_duration en ms) aunque el reproductor no esté en marcha (no lo
+     * arranca): lo lee al crearse; si ya suena, se aplica al momento.
      */
     @PluginMethod
     public void setCrossfade(final PluginCall call) {
         final boolean enabled = call.getBoolean("enabled", false);
+        final long durationMs = call.getInt("seconds", 10) * 1000L;
         main.post(() -> {
-            PlaybackService.saveCrossfade(getContext(), enabled);
+            PlaybackService.saveCrossfade(getContext(), enabled, durationMs);
             call.resolve();
         });
     }

@@ -4,7 +4,7 @@ import { Link } from 'react-router'
 import { GenrePicker } from '../components/tastes/GenrePicker'
 import { Switch } from '../components/ui/Switch'
 import { onboarding } from '../lib/onboarding'
-import { settings, useSettings, type ThemeChoice } from '../lib/settings'
+import { CROSSFADE_OPTIONS, settings, useSettings, type CrossfadeSeconds, type ThemeChoice } from '../lib/settings'
 import { LIMIT_STEPS, MB_PER_SONG, UNLIMITED, offlineCache, useOfflineStatus } from '../player/offlineCache'
 import { showToast } from '../ui/toast'
 
@@ -17,7 +17,7 @@ const THEMES: { key: ThemeChoice; label: string; note: string }[] = [
 ]
 
 export function Settings() {
-  const { hideViewToggle, dynamicQueue, crossfade, theme } = useSettings()
+  const { hideViewToggle, dynamicQueue, crossfade, crossfadeSeconds, theme } = useSettings()
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 pt-6 pb-10">
       <h1 className="text-2xl font-bold md:text-3xl">Ajustes</h1>
@@ -38,7 +38,30 @@ export function Settings() {
         <h2 id="ajustes-sonando" className="text-lg font-bold">Reproducción</h2>
         <Switch className="mt-3" label="Mostrar «Canción | Letra»" note="Si lo ocultas, siempre se ve la carátula (sin la letra). La música suena igual." checked={!hideViewToggle} onChange={(on) => settings.set({ hideViewToggle: !on })} />
         <Switch className="mt-4" label="Fila Dinámica" note="La cola nunca baja de 10: si quitas una o se acaba la lista, entran canciones de «Recomendadas». También se cambia en «Próximas en sonar»." checked={dynamicQueue} onChange={(on) => settings.set({ dynamicQueue: on })} />
-        <Switch className="mt-4" label="Transición suave (Crossfade 10s)" note="Los últimos 10 segundos de cada canción se mezclan con el inicio de la siguiente, también con la pantalla bloqueada. Apagada, las canciones cambian como siempre." checked={crossfade} onChange={(on) => settings.set({ crossfade: on })} />
+        <Switch
+          className="mt-4"
+          label="Transición suave (Crossfade)"
+          note={crossfade ? `Los últimos ${crossfadeSeconds} segundos de cada canción se mezclan con el inicio de la siguiente, también con la pantalla bloqueada.` : 'Apagada, las canciones cambian como siempre.'}
+          checked={crossfade}
+          onChange={(on) => settings.set({ crossfade: on })}
+        />
+        {/* Cuánto dura la mezcla (solo con la transición encendida). El reproductor nativo lo usa al momento. */}
+        {crossfade && (
+          <label className="mt-3 flex items-center justify-between gap-4">
+            <span className="font-semibold">Duración de la transición</span>
+            <select
+              value={crossfadeSeconds}
+              onChange={(e) => settings.set({ crossfadeSeconds: Number(e.target.value) as CrossfadeSeconds })}
+              className="h-10 shrink-0 rounded-md bg-contraste/10 px-3 text-sm font-semibold text-texto ring-1 ring-contraste/10 outline-none focus:ring-2 focus:ring-acento"
+            >
+              {CROSSFADE_OPTIONS.map((seconds) => (
+                <option key={seconds} value={seconds}>
+                  {seconds} segundos
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </section>
       <OfflineSection />
       <section aria-labelledby="ajustes-generos" className="rounded-lg bg-tarjeta p-4">

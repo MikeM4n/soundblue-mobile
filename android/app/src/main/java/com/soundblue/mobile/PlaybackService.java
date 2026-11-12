@@ -108,11 +108,15 @@ public final class PlaybackService extends MediaSessionService {
     /** ▶ del widget con la app cerrada: Android arranca el servicio en primer plano y suena la última cola guardada. */
     public static final String ACTION_RESUME_FROM_WIDGET = "com.soundblue.mobile.RESUME_FROM_WIDGET";
     private static final String QUEUE_PREFS = "soundblue_queue"; // la cola, dónde iba y las que te gustan
-    // Transición suave (crossfade): los últimos 10 s de una canción se mezclan con el inicio de la siguiente.
+    // Transición suave (crossfade): los últimos segundos de una canción (5, 10, 15 o 20; Ajustes) se mezclan con el inicio
+    // de la siguiente.
     private static final String CROSSFADE_KEY = "crossfade_enabled"; // Ajustes → «Transición suave»
-    private static final long CROSSFADE_MS = 10_000;
+    private static final String CROSSFADE_DURATION_KEY = "crossfade_duration"; // cuánto dura la mezcla (ms)
+    private static final long DEFAULT_CROSSFADE_MS = 10_000;
+    private static final long MIN_CROSSFADE_MS = 5_000;
+    private static final long MAX_CROSSFADE_MS = 20_000;
     private static final long FADE_TICK_MS = 100; // el volumen de las dos se ajusta 10 veces por segundo
-    private static final long FADE_WATCH_MS = 500; // cada cuánto se mira si ya faltan 10 s
+    private static final long FADE_WATCH_MS = 500; // cada cuánto se mira si ya llegó la hora de mezclar
     private static final AudioAttributes AUDIO_ATTRIBUTES = new AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -187,11 +191,12 @@ public final class PlaybackService extends MediaSessionService {
     private final Runnable offlineProbe = this::probeOnline;
     private boolean backupBlocked; // la caché no suena (falló entera): no se vuelve a ella hasta que haya red o elijas otra
     // Transición suave: un solo ExoPlayer no puede sonar dos canciones a la vez, así que hay dos. `player` es el de la
-    // sesión (notificación, controles, la cola). Cuando a la canción le quedan 10 s, `spare` arranca la siguiente en
+    // sesión (notificación, controles, la cola). Cuando a la canción le quedan `crossfadeMs`, `spare` arranca la siguiente en
     // volumen 0 y cada 100 ms uno baja y el otro sube. Al terminar, `spare` pasa a ser `player` (sin cortes: ya venía
     // sonando) y el que era `player` queda de repuesto para la próxima. Todo aquí, en el servicio: sigue con la pantalla
     // bloqueada y la app dormida.
     private boolean crossfade; // el ajuste (SharedPreferences: crossfade_enabled)
+    private long crossfadeMs = DEFAULT_CROSSFADE_MS; // cuánto dura la mezcla (SharedPreferences: crossfade_duration)
     private DataSource.Factory dataSource;
     private ExoPlayer spare; // el otro reproductor (se crea la primera vez que hace falta)
     private boolean fading; // mezclando: `player` baja y `spare` sube
@@ -251,6 +256,7 @@ public final class PlaybackService extends MediaSessionService {
         likedIds.addAll(queuePrefs.getStringSet("liked", new HashSet<>()));
         endless = queuePrefs.getBoolean("endless", true); // también con la app cerrada (el widget)
         crossfade = queuePrefs.getBoolean(CROSSFADE_KEY, false);
+        crossfadeMs = clampCrossfade(queuePrefs.getLong(CROSSFADE_DURATION_KEY, DEFAULT_CROSSFADE_MS));
         loadRecent(queuePrefs);
         // Si la app está abierta (p. ej. el widget arrancó la música), se entera desde ya de lo que pasa aquí.
         events = PlaybackPlugin.listener();
@@ -423,7 +429,7 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     void pause() {
-        cancelFade(); // en pausa no se mezcla: al seguir, si aún faltan menos de 10 s, la transición empieza de nuevo
+        cancelFade(); // en pausa no se mezcla: al seguir, si aún está dentro de la mezcla, la transición empieza de nuevo
         player.pause();
     }
 
@@ -453,11 +459,16 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     /** Ajustes → «Transición suave» (también lo deja guardado para cuando el servicio arranque solo, p. ej. desde el widget). */
-    static void saveCrossfade(Context context, boolean enabled) {
-        context.getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit().putBoolean(CROSSFADE_KEY, enabled).apply();
+    static void saveCrossfade(Context context, boolean enabled, long durationMs) {
+        final long duration = clampCrossfade(durationMs);
+        context.getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(CROSSFADE_KEY, enabled)
+                .putLong(CROSSFADE_DURATION_KEY, duration)
+                .apply();
         final PlaybackService service = instance;
         if (service == null) return;
         service.crossfade = enabled;
+        service.crossfadeMs = duration; // en plena mezcla, el siguiente ajuste (fadeStep) ya usa la duración nueva
         if (!enabled) service.cancelFade();
         else if (service.player.isPlaying()) service.scheduleFadeWatch();
     }
@@ -935,15 +946,20 @@ public final class PlaybackService extends MediaSessionService {
 
     // ---- Transición suave (crossfade) ----
 
+    /** 5 a 20 s (lo que ofrece Ajustes); cualquier otro valor guardado vuelve a eso. */
+    private static long clampCrossfade(long durationMs) {
+        return Math.max(MIN_CROSSFADE_MS, Math.min(MAX_CROSSFADE_MS, durationMs));
+    }
+
     private void scheduleFadeWatch() {
         main.removeCallbacks(fadeWatch);
         if (crossfade && !fading) main.postDelayed(fadeWatch, FADE_WATCH_MS);
     }
 
     /**
-     * Mientras suena (cada medio segundo): ¿le quedan 10 s o menos a la canción? Entonces empieza la mezcla. No hay
-     * mezcla sin siguiente en la cola, con «repetir una», en el modo offline (la caché en bucle) ni en canciones de menos
-     * de 20 s (no habría qué mezclar).
+     * Mientras suena (cada medio segundo): ¿le queda a la canción lo que dura la mezcla (`crossfadeMs`) o menos? Entonces
+     * empieza. No hay mezcla sin siguiente en la cola, con «repetir una», en el modo offline (la caché en bucle) ni en
+     * canciones que duren menos del doble de la mezcla (no habría qué mezclar).
      */
     private void watchForFade() {
         if (!crossfade || fading || !player.isPlaying()) return;
@@ -951,7 +967,7 @@ public final class PlaybackService extends MediaSessionService {
         final boolean blocked = leaving != null && leaving.mediaId.equals(noFadeFor);
         final long duration = player.getDuration();
         final long remaining = duration - player.getCurrentPosition();
-        if (!blocked && duration != C.TIME_UNSET && duration >= CROSSFADE_MS * 2 && remaining <= CROSSFADE_MS && remaining > FADE_TICK_MS * 5
+        if (!blocked && duration != C.TIME_UNSET && duration >= crossfadeMs * 2 && remaining <= crossfadeMs && remaining > FADE_TICK_MS * 5
                 && !offline && player.getRepeatMode() == Player.REPEAT_MODE_OFF && player.hasNextMediaItem()) {
             startFade();
             return;
@@ -983,7 +999,7 @@ public final class PlaybackService extends MediaSessionService {
     }
 
     /**
-     * Un ajuste de la mezcla (cada 100 ms): la que se va suena a (lo que le queda / 10 s) y la que entra a (1 − eso), las
+     * Un ajuste de la mezcla (cada 100 ms): la que se va suena a (lo que le queda / duración elegida) y la que entra a (1 − eso), las
      * dos sobre el volumen que pidió la app. Cuando a la que se va ya no le queda nada, termina (finishFade).
      */
     private void fadeStep() {
@@ -999,7 +1015,7 @@ public final class PlaybackService extends MediaSessionService {
             finishFade();
             return;
         }
-        final float leaving = Math.min(1f, remaining / (float) CROSSFADE_MS);
+        final float leaving = Math.min(1f, remaining / (float) crossfadeMs);
         player.setVolume(userVolume * leaving);
         spare.setVolume(userVolume * (1f - leaving));
         main.postDelayed(fadeTick, FADE_TICK_MS);
@@ -1318,7 +1334,7 @@ public final class PlaybackService extends MediaSessionService {
                 failures = 0;
                 prefetchNext();
             }
-            // Transición suave: sonando, se vigila cuándo faltan 10 s. En pausa (o si una llamada quitó el foco de audio)
+            // Transición suave: sonando, se vigila cuándo empieza la mezcla. En pausa (o si una llamada quitó el foco de audio)
             // la mezcla se deja: la que estaba entrando no debe seguir sola. Cargando (buffer) no se toca.
             if (isPlaying) scheduleFadeWatch();
             else {
