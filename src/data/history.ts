@@ -27,20 +27,10 @@ export const artistKey = (artist: string) =>
 
 let entries: ListenEntry[] = read()
 const listeners = new Set<() => void>()
-const watchers = new Set<() => void>() // cada cambio, también los que no recalculan «Para ti» (Mi Cuenta lo sube)
 
 function read(): ListenEntry[] {
   try {
-    return parseHistory(localStorage.getItem(KEY))
-  } catch {
-    return []
-  }
-}
-
-/** El historial guardado (texto de localStorage), validado. También lee el de una copia de seguridad. */
-export function parseHistory(text: string | null | undefined): ListenEntry[] {
-  try {
-    const saved = JSON.parse(text || '[]')
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? '[]')
     return Array.isArray(saved) ? saved.filter((e) => isTrack(e?.track) && typeof e.count === 'number' && typeof e.last === 'number') : []
   } catch {
     return []
@@ -55,7 +45,6 @@ function commit(next: ListenEntry[], notify: boolean) {
     /* sin almacenamiento: el historial dura mientras la app esté abierta */
   }
   if (notify) listeners.forEach((listener) => listener())
-  watchers.forEach((watcher) => watcher())
 }
 
 /** Solo lo que sirve para recomendar (sin datos del reproductor). */
@@ -111,24 +100,10 @@ export const listening = {
     const since = Date.now() - ms
     return new Set(entries.filter((e) => e.last >= since).map((e) => e.track.id))
   },
-  /** Cambia todo el historial (Mi Cuenta: fusionar con la nube, traerla o recuperar la copia de seguridad). */
-  replaceAll(next: readonly ListenEntry[]) {
-    commit(next.filter((e) => isTrack(e?.track) && typeof e.count === 'number' && typeof e.last === 'number'), true)
-  },
   subscribe(listener: () => void) {
     listeners.add(listener)
     return () => {
       listeners.delete(listener)
     }
   },
-  /** Avisa en CADA cambio (también al empezar a sonar o al saltar una canción). */
-  watch(watcher: () => void) {
-    watchers.add(watcher)
-    return () => {
-      watchers.delete(watcher)
-    }
-  },
 }
-
-/** Cuántas canciones guarda el historial (las más recientes). */
-export const HISTORY_MAX = MAX

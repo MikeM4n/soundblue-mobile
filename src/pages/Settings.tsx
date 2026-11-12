@@ -1,7 +1,6 @@
 import { ChevronRight } from 'lucide-react'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router'
-import { AccountSection } from '../components/account/AccountSection'
 import { GenrePicker } from '../components/tastes/GenrePicker'
 import { Switch } from '../components/ui/Switch'
 import { onboarding } from '../lib/onboarding'
@@ -22,7 +21,6 @@ export function Settings() {
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 pt-6 pb-10">
       <h1 className="text-2xl font-bold md:text-3xl">Ajustes</h1>
-      <AccountSection />
       <section aria-labelledby="ajustes-tema" className="rounded-lg bg-tarjeta p-4">
         <h2 id="ajustes-tema" className="text-lg font-bold">Tema</h2>
         <div role="radiogroup" aria-labelledby="ajustes-tema" className="mt-2 space-y-1">

@@ -20,7 +20,7 @@ export interface SavedPlaylist {
   count?: number // canciones (cuando ya se leyó la lista completa)
 }
 
-export interface LibraryState {
+interface LibraryState {
   favorites: Track[]
   playlists: Playlist[]
   saved: SavedPlaylist[] // la más reciente primero
@@ -34,16 +34,7 @@ let state: LibraryState = load()
 
 function load(): LibraryState {
   try {
-    return parseLibrary(localStorage.getItem(KEY))
-  } catch {
-    return { favorites: [], playlists: [], saved: [] }
-  }
-}
-
-/** La biblioteca guardada (texto de localStorage), validada. También lee la de una copia de seguridad. */
-export function parseLibrary(text: string | null | undefined): LibraryState {
-  try {
-    const saved = JSON.parse(text || 'null')
+    const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
     return {
       favorites: Array.isArray(saved?.favorites) ? saved.favorites.filter(isTrack) : [],
       playlists: Array.isArray(saved?.playlists)
@@ -75,21 +66,6 @@ function commit(next: LibraryState): boolean {
   }
   listeners.forEach((listener) => listener())
   return stored
-}
-
-/**
- * Guarda y avisa SOLO si cabe en el almacenamiento; si no, no cambia nada ni avisa (así nadie, p. ej. la sincronización
- * con la nube, ve por un instante un estado que nunca quedó guardado).
- */
-function tryCommit(next: LibraryState): boolean {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(next))
-  } catch {
-    return false
-  }
-  state = next
-  listeners.forEach((listener) => listener())
-  return true
 }
 
 const insertAt = <T,>(list: T[], index: number, item: T) => {
@@ -143,14 +119,6 @@ export const library = {
 
   playlist: (id: string) => state.playlists.find((p) => p.id === id) ?? null,
 
-  /**
-   * Cambia toda la biblioteca de una vez (Mi Cuenta: fusionar con la nube, traerla o recuperar la copia de seguridad).
-   * False si no cabe en el teléfono: entonces queda exactamente como estaba.
-   */
-  replaceAll(next: LibraryState): boolean {
-    return tryCommit({ favorites: [...next.favorites], playlists: [...next.playlists], saved: [...next.saved] })
-  },
-
   // ---- Playlists de YouTube guardadas (sus canciones las maneja library/savedPlaylists.ts) ----
   savedPlaylist: (id: string) => state.saved.find((p) => p.id === id) ?? null,
   addSaved(playlist: SavedPlaylist) {
@@ -169,10 +137,14 @@ export const library = {
    * cabe en el almacenamiento del navegador (entonces no queda nada a medias).
    */
   importPlaylist(name: string, tracks: readonly Track[], { image, source }: { image?: string; source?: string }): { playlist: Playlist; updated: boolean } | null {
+    const before = state
     const existing = source ? state.playlists.find((p) => p.source === source) : undefined
     const playlist: Playlist = { id: existing?.id ?? newId(), name: name.trim() || 'Playlist importada', tracks: [...tracks], image, source }
     const playlists = existing ? state.playlists.map((p) => (p.id === existing.id ? playlist : p)) : [...state.playlists, playlist]
-    if (!tryCommit({ ...state, playlists })) return null
+    if (!commit({ ...state, playlists })) {
+      commit(before)
+      return null
+    }
     return { playlist, updated: !!existing }
   },
 

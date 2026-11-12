@@ -3,11 +3,10 @@
 // los plugins a android/), así no queda nada de una compilación anterior  3. revisa que la copia tenga index.html y sus
 // JS  4. Gradle assembleRelease: el APK de producción, firmado con la clave de android/keystore.properties (sin ese
 // archivo no compila: ver android/app/build.gradle).
-// Antes de compilar, parcha el plugin de Supabase (patchSupabasePlugin, abajo).
 // Usa JAVA_HOME y ANDROID_HOME si están definidos; si no, el JDK 21 y el SDK de %LOCALAPPDATA%\SoundBlueAndroidBuild.
 // Deja el resultado en SoundBlue.apk (Gradle ya lo nombra así: android/app/build.gradle).
 import { execSync } from 'node:child_process'
-import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 const local = join(process.env.LOCALAPPDATA ?? '', 'SoundBlueAndroidBuild')
@@ -25,7 +24,6 @@ if (!existsSync('android/keystore.properties')) {
   console.error('\nFalta android/keystore.properties (la clave de firma y su contraseña): sin ella no se puede firmar el APK.')
   process.exit(1)
 }
-patchSupabasePlugin()
 run('npm run build')
 rmSync(PUBLIC, { recursive: true, force: true })
 run('npx cap sync android')
@@ -51,94 +49,4 @@ function checkPublic() {
   if (config.server) fail('capacitor.config.json trae «server»: el APK cargaría un servidor en vez de la interfaz empaquetada.')
   const js = readdirSync(join(PUBLIC, 'assets')).filter((file) => file.endsWith('.js'))
   console.log(`Interfaz en ${PUBLIC}: index.html + ${js.length} JS (${scripts.join(', ')}), sin «server».`)
-}
-
-/**
- * Parche de @capgo/capacitor-supabase 8.2.10 (en node_modules; se aplica en cada compilación, también tras un npm install):
- * 1. Un solo cliente de Supabase por proceso. La música sigue sonando con la app cerrada (PlaybackService), así que al
- *    volver a abrirla Android crea otra actividad y otro plugin. Sin el parche, cada uno tendría su cliente renovando la
- *    misma sesión con su propia copia del token de renovación (que es de un solo uso): el viejo podría usar uno ya
- *    gastado y Supabase cerraría la sesión.
- * 2. «Cerrar sesión» sin internet: el SDK no llega a borrar la sesión guardada; con el parche se borra igual del teléfono.
- */
-function patchSupabasePlugin() {
-  const file = 'node_modules/@capgo/capacitor-supabase/android/src/main/java/ee/forgr/plugin/capacitor_supabase/CapacitorSupabasePlugin.kt'
-  if (!existsSync(file)) {
-    console.error(`\nFalta ${file}: ¿npm install?`)
-    process.exit(1)
-  }
-  let code = readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
-  if (code.includes('SoundBlue:')) return
-  const swap = (from, to) => {
-    if (!code.includes(from)) {
-      console.error(`\nEl plugin de Supabase cambió y no se pudo parchar (falta: ${from.trim().split('\n')[0]}). Revisa scripts/android-apk.mjs.`)
-      process.exit(1)
-    }
-    code = code.replace(from, to)
-  }
-  swap(
-    'class CapacitorSupabasePlugin : Plugin() {\n',
-    [
-      'class CapacitorSupabasePlugin : Plugin() {',
-      '    // SoundBlue: un solo cliente por proceso (ver scripts/android-apk.mjs).',
-      '    companion object {',
-      '        @Volatile private var sharedClient: SupabaseClient? = null',
-      '        @Volatile private var sharedClientId: String? = null',
-      '    }',
-      '',
-    ].join('\n'),
-  )
-  swap(
-    [
-      '            supabaseClient = createSupabaseClient(',
-      '                supabaseUrl = supabaseUrl,',
-      '                supabaseKey = supabaseKey',
-      '            ) {',
-      '                install(Auth)',
-      '                install(Postgrest)',
-      '            }',
-      '',
-    ].join('\n'),
-    [
-      '            val clientId = "$supabaseUrl|$supabaseKey"',
-      '            supabaseClient = (if (sharedClientId == clientId) sharedClient else null) ?: createSupabaseClient(',
-      '                supabaseUrl = supabaseUrl,',
-      '                supabaseKey = supabaseKey',
-      '            ) {',
-      '                install(Auth)',
-      '                install(Postgrest)',
-      '            }',
-      '            sharedClient = supabaseClient',
-      '            sharedClientId = clientId',
-      '',
-    ].join('\n'),
-  )
-  swap(
-    [
-      '            try {',
-      '                client.auth.signOut()',
-      '                call.resolve()',
-      '            } catch (e: Exception) {',
-      '                call.reject("Sign out failed: ${e.message}")',
-      '            }',
-      '',
-    ].join('\n'),
-    [
-      '            try {',
-      '                client.auth.signOut()',
-      '                call.resolve()',
-      '            } catch (e: Exception) {',
-      '                // SoundBlue: sin internet, la sesión igual se borra del teléfono.',
-      '                try {',
-      '                    client.auth.clearSession()',
-      '                    call.resolve()',
-      '                } catch (cleared: Exception) {',
-      '                    call.reject("Sign out failed: ${e.message}")',
-      '                }',
-      '            }',
-      '',
-    ].join('\n'),
-  )
-  writeFileSync(file, code)
-  console.log('Plugin de Supabase parchado (un cliente por proceso; cerrar sesión sin internet).')
 }
