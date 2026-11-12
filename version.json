@@ -1,6 +1,6 @@
 {
-  "versionCode": 20100,
-  "versionName": "2.1.0",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.0/SoundBlue.apk",
-  "changelog": "Transición suave: activa en Ajustes → Reproducción el Crossfade de 10 s y el final de cada canción se mezcla con el inicio de la siguiente, como en Spotify, también con la pantalla bloqueada."
+  "versionCode": 20101,
+  "versionName": "2.1.1",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.1/SoundBlue.apk",
+  "changelog": "Transición suave a tu medida: en Ajustes → Reproducción, elige cuánto dura la mezcla entre canciones (5, 10, 15 o 20 segundos)."
 }
