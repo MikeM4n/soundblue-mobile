@@ -1,6 +1,6 @@
 {
-  "versionCode": 20103,
-  "versionName": "2.1.3",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.3/SoundBlue.apk",
-  "changelog": "El mini reproductor queda pegado a la barra inferior (Inicio, Buscar, Biblioteca), sin el espacio que lo hacía ver flotando."
+  "versionCode": 20104,
+  "versionName": "2.1.4",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.4/SoundBlue.apk",
+  "changelog": "La música va primero: la reproducción ya no se traba mientras descargas canciones (búfer más grande y descargas que ceden la red al reproductor)."
 }
