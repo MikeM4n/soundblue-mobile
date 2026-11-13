@@ -1,6 +1,6 @@
 {
-  "versionCode": 20102,
-  "versionName": "2.1.2",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.2/SoundBlue.apk",
-  "changelog": "Teléfonos con botones Atrás, Inicio y Recientes: la barra inferior y el mini reproductor ya no quedan debajo de los botones del sistema. Con navegación por gestos todo sigue igual."
+  "versionCode": 20103,
+  "versionName": "2.1.3",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.3/SoundBlue.apk",
+  "changelog": "El mini reproductor queda pegado a la barra inferior (Inicio, Buscar, Biblioteca), sin el espacio que lo hacía ver flotando."
 }
