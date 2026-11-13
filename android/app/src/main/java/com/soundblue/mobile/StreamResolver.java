@@ -27,7 +27,8 @@ import java.util.regex.Pattern;
 
 /**
  * Extrae con NewPipe la URL directa de audio de un video de YouTube y la guarda hasta que YouTube la vence. La usan el
- * servicio de reproducción (al cargar una canción y para pre-cargar la siguiente) y el plugin NewPipe.
+ * servicio de reproducción (al cargar una canción y para pre-cargar la siguiente), el plugin NewPipe y las descargas.
+ * Los 2 hilos de WORKER son de la música: las descargas extraen en su propio hilo de prioridad baja (resolveForDownload).
  */
 final class StreamResolver {
     static final Pattern VIDEO_ID = Pattern.compile("^[A-Za-z0-9_-]{11}$");
@@ -100,8 +101,37 @@ final class StreamResolver {
         if (!VIDEO_ID.matcher(videoId).matches()) {
             throw new UnavailableException("El identificador del video de YouTube no es válido.", null);
         }
+        return await(request(videoId));
+    }
+
+    /**
+     * Para las descargas (OfflineCache, en su hilo de prioridad baja). Si la URL ya está (o el reproductor la está
+     * extrayendo), esa. Si no, se extrae AQUÍ, en el hilo de descargas, sin ocupar los 2 hilos del reproductor: la canción
+     * que suena y la siguiente nunca esperan detrás de una descarga (y las consultas de NewPipe de la descarga esperan
+     * mientras el reproductor carga: NewPipeDownloader). Lo extraído queda guardado también para el reproductor.
+     */
+    static Stream resolveForDownload(String videoId) throws IOException {
+        if (!VIDEO_ID.matcher(videoId).matches()) {
+            throw new UnavailableException("El identificador del video de YouTube no es válido.", null);
+        }
+        final CompletableFuture<Stream> saved = STREAMS.get(videoId);
+        if (saved != null && !stale(saved)) return await(saved);
+        final Stream stream;
         try {
-            return request(videoId).get();
+            stream = extract(videoId);
+        } catch (RuntimeException error) {
+            final Throwable cause = error instanceof CompletionException && error.getCause() != null ? error.getCause() : error;
+            if (cause instanceof IOException) throw (IOException) cause;
+            throw new IOException(cause);
+        }
+        // Se guarda, salvo que el reproductor la haya extraído (o esté extrayéndola) entretanto.
+        STREAMS.compute(videoId, (id, now) -> now != null && !stale(now) ? now : CompletableFuture.completedFuture(stream));
+        return stream;
+    }
+
+    private static Stream await(CompletableFuture<Stream> future) throws IOException {
+        try {
+            return future.get();
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
             throw new InterruptedIOException("Se canceló la extracción del audio.");

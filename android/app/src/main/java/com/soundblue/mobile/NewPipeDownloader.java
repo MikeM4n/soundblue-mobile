@@ -26,6 +26,9 @@ public final class NewPipeDownloader extends Downloader {
 
     @Override
     public Response execute(final Request request) throws IOException, ReCaptchaException {
+        // Las consultas de una DESCARGA (hilo de descargas) esperan mientras el reproductor carga la canción: la música
+        // va primero. Las del reproductor y de la app no esperan nunca.
+        OfflineCache.yieldToPlayback(null);
         final HttpURLConnection connection =
                 (HttpURLConnection) new URL(request.url()).openConnection();
         connection.setConnectTimeout(CONNECT_TIMEOUT_MS);

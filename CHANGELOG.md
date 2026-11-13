@@ -1,5 +1,15 @@
 # Historial de cambios
 
+## 2026-11-13 — v2.1.4
+
+- La música va primero: la reproducción ya no se traba (buffering o pausas) mientras se descargan canciones, también en teléfonos de gama baja. Todo es nativo (Java); la interfaz no cambia.
+  - Búfer de ExoPlayer más grande (`DefaultLoadControl`, solo para lo que llega por internet): guarda entre 90 s y 3 min de la canción por delante (antes 50 s, lo de Media3), unos 3,5 MB en memoria a 160 kbps. Empieza a sonar al tener 1 s, como antes; tras quedarse sin búfer, espera 4 s (antes 2) para no dar tirones seguidos.
+  - Las descargas ceden la red: mientras el reproductor carga la canción (o la siguiente) o tiene menos de 20 s guardados, la descarga suelta la conexión y espera (como mucho 15 s seguidos; luego avanza un poco y vuelve a esperar), y sigue después desde donde iba. Lo avisa el reproductor al momento y, mientras suena, cada segundo. Si cancelas la descarga mientras espera, se cancela enseguida.
+  - Mientras suena música por internet, las descargas van como mucho a 512 KB/s (sin límite si suena una descargada, en pausa o sin música).
+  - Las descargas corren en un hilo de prioridad baja (`THREAD_PRIORITY_BACKGROUND`), también su extracción con NewPipe, que ya no ocupa los 2 hilos del reproductor: la canción que suena y la siguiente nunca esperan detrás de una descarga. Las consultas de NewPipe de una descarga también esperan mientras el reproductor carga.
+  - Medio segundo de respiro entre canción y canción al descargar listas (CPU y disco libres para la música).
+  - La siguiente canción se pre-carga (NewPipe) cuando la actual ya suena, no mientras todavía carga.
+
 ## 2026-11-13 — v2.1.3
 
 - El mini reproductor (la barra de la canción que suena, en el celular) queda pegado a la barra inferior (Inicio, Buscar, Biblioteca), sin el espacio de 4 px que lo hacía ver «flotando». Su borde de abajo es exactamente el de arriba de la barra (`--nav-h`), así que sigue subiendo con ella en los teléfonos con botones del sistema (el área segura de la 2.1.2 no cambia). Sus esquinas de abajo quedan rectas para que la unión sea limpia; las de arriba siguen redondeadas. El final de las páginas sigue llegando justo al borde del mini reproductor.

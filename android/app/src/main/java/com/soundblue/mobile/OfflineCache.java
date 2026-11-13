@@ -6,6 +6,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
@@ -28,6 +29,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -38,6 +40,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.BooleanSupplier;
 
 /**
  * Descargas para escuchar sin conexión: el AUDIO guardado en el teléfono (files/offline) y su lista (SharedPreferences).
@@ -53,6 +56,10 @@ import java.util.concurrent.Executors;
  * misma descarga. Si aun así no cabe, lo que falta no se descarga (onFull, diciendo si fue por el espacio).
  * «Descargar solo con Wi-Fi» (encendido por defecto): solo se descarga en una red sin límite de datos; si toca esperar,
  * lo pendiente sigue solo al llegar la red (resume, desde OfflineCachePlugin).
+ * La música va primero (2.1.4): las descargas corren en un hilo de prioridad baja (también su extracción con NewPipe, que
+ * no ocupa los hilos del reproductor), esperan mientras el reproductor carga la canción o tiene poco búfer
+ * (yieldToPlayback, avisado por PlaybackService con setPlayback), van como mucho a 512 KB/s mientras suena música por
+ * internet y descansan medio segundo entre canción y canción.
  */
 @OptIn(markerClass = UnstableApi.class)
 final class OfflineCache {
@@ -73,8 +80,22 @@ final class OfflineCache {
     private static final int CHUNK = 1024 * 1024; // de a 1 MB, como pide ExoPlayer (así YouTube no frena la descarga)
     private static final int MAX_RETRIES = 3; // cortes de red seguidos en la misma canción antes de darla por fallida
     private static final long RETRY_MS = 30_000; // tras un corte con la red aparentemente bien, se reintenta a los 30 s
+    // Prioridad del reproductor (2.1.4):
+    private static final long SONG_REST_MS = 500; // respiro entre canción y canción (CPU y disco libres para la música)
+    private static final long STREAMING_LIMIT = 512 * 1024; // bytes/s mientras suena música por internet
+    private static final long MAX_YIELD_MS = 15_000; // lo más que espera seguido a que el reproductor cargue
     private static final Object LOCK = new Object();
-    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor();
+    private static final Object GATE = new Object(); // donde esperan las descargas mientras el reproductor carga
+    private static final ThreadLocal<Boolean> IN_DOWNLOADS = new ThreadLocal<>(); // true en el hilo de descargas
+    /** Un solo hilo, de prioridad baja: el reproductor y la interfaz se quedan con la CPU cuando la necesitan. */
+    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor((task) -> new Thread(() -> {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+        IN_DOWNLOADS.set(Boolean.TRUE);
+        task.run();
+    }, "SoundBlue-descargas"));
+    // Lo que avisa PlaybackService (setPlayback):
+    private static volatile boolean playbackStreaming; // suena música por internet: las descargas van más despacio
+    private static volatile boolean playbackHungry; // el reproductor necesita la red YA: las descargas esperan
 
     /** Lo que la app quiere saber (OfflineCachePlugin). Se llama desde el hilo de descargas o el de la app. */
     interface Listener {
@@ -151,6 +172,7 @@ final class OfflineCache {
     private static volatile String current; // la que se está descargando (las demás de la cola esperan)
     private static volatile boolean cancelCurrent;
     private static boolean networkFailure; // la última fetch falló por la red (solo el hilo de descargas)
+    private static boolean fetched; // la última de la cola se bajó de internet (solo el hilo de descargas)
     private static int preFreed; // las que se borraron por espacio antes de la descarga en curso (solo el hilo de descargas)
     private static String retryId; // la que falló por un corte de red…
     private static int retryCount; // …y cuántas veces seguidas
@@ -172,6 +194,85 @@ final class OfflineCache {
     /** Solo si sigue siendo `value`: al reabrir la app, la vieja se destruye después de que la nueva se registró. */
     static void clearListener(Listener value) {
         if (listener == value) listener = null;
+    }
+
+    // ---- La música va primero ----
+
+    /**
+     * Lo avisa PlaybackService (hilo principal, al cambiar algo y cada segundo mientras suena). `streaming`: suena música
+     * por internet (las descargas van como mucho a STREAMING_LIMIT). `hungry`: el reproductor está cargando la canción (o
+     * la siguiente) o le quedan pocos segundos guardados: las descargas sueltan la red y esperan.
+     */
+    static void setPlayback(boolean streaming, boolean hungry) {
+        playbackStreaming = streaming;
+        if (playbackHungry == hungry) return;
+        playbackHungry = hungry;
+        if (!hungry) wakeDownloads();
+    }
+
+    /**
+     * En el hilo de descargas (fetch y las consultas de NewPipe de una descarga, NewPipeDownloader): mientras el reproductor
+     * necesite la red, espera. Como mucho MAX_YIELD_MS seguidos (si el reproductor se queda cargando, la descarga avanza
+     * un poco y vuelve a esperar) y deja de esperar si `stop` (la cancelaste). En cualquier otro hilo no hace nada.
+     */
+    static void yieldToPlayback(@Nullable BooleanSupplier stop) {
+        if (!playbackHungry || IN_DOWNLOADS.get() == null) return;
+        final long until = SystemClock.elapsedRealtime() + MAX_YIELD_MS;
+        synchronized (GATE) {
+            while (playbackHungry && (stop == null || !stop.getAsBoolean())) {
+                final long left = until - SystemClock.elapsedRealtime();
+                if (left <= 0) return;
+                try {
+                    GATE.wait(left);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    /** La descarga que espera al reproductor vuelve a mirar (ya no hace falta esperar, o la cancelaste). */
+    private static void wakeDownloads() {
+        synchronized (GATE) {
+            GATE.notifyAll();
+        }
+    }
+
+    /** Entre canción y canción: un respiro para la CPU y el disco (el reproductor y la interfaz van primero). */
+    private static void rest() {
+        try {
+            Thread.sleep(SONG_REST_MS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Mientras suena música por internet, la descarga va como mucho a STREAMING_LIMIT: el resto de la red es del reproductor. */
+    private static final class Throttle {
+        private long start; // desde cuándo se mide (0: ahora no hay límite)
+        private long bytes; // lo bajado desde `start`
+
+        void onRead(int read) throws InterruptedIOException {
+            if (!playbackStreaming) {
+                start = 0;
+                return;
+            }
+            final long now = SystemClock.elapsedRealtime();
+            if (start == 0) {
+                start = now;
+                bytes = 0;
+            }
+            bytes += read;
+            final long due = start + bytes * 1000 / STREAMING_LIMIT;
+            if (due <= now) return;
+            try {
+                Thread.sleep(due - now);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedIOException("Se detuvo la descarga");
+            }
+        }
     }
 
     // ---- Lectura ----
@@ -427,6 +528,7 @@ final class OfflineCache {
             }
             if (current != null && ids.contains(current)) cancelCurrent = true; // la descarga en curso se corta
         }
+        wakeDownloads(); // si esperaba al reproductor, se entera ya
         for (final String id : removed) notifyTrack(id, "removed");
     }
 
@@ -463,6 +565,7 @@ final class OfflineCache {
             if (files != null) for (final File file : files) if (!file.delete()) Log.w(TAG, "No se pudo borrar " + file);
             prefs().edit().remove(KEY).apply();
         }
+        wakeDownloads();
         for (final String id : removed) notifyTrack(id, "removed");
     }
 
@@ -519,6 +622,7 @@ final class OfflineCache {
                         return;
                     }
                 }
+                fetched = false;
                 final int[] result = downloadManual(job);
                 if (result == null) { // se cayó la red: queda en la cola y sigue al volver (resume)
                     pause();
@@ -527,6 +631,12 @@ final class OfflineCache {
                 evicted += result[0];
                 skipped += result[1];
                 storage |= result[2] == 1;
+                // Bajó una de internet y quedan más: medio segundo de respiro antes de la siguiente.
+                final boolean more;
+                synchronized (LOCK) {
+                    more = !manualQueue.isEmpty();
+                }
+                if (fetched && more) rest();
             }
         } finally {
             notifyEvicted(evicted);
@@ -591,6 +701,7 @@ final class OfflineCache {
             preFreed = freed;
         }
         notifyTrack(id, "downloading");
+        fetched = true;
         final File file = fetch(job.track);
         int evicted = preFreed;
         boolean saved = false;
@@ -681,15 +792,21 @@ final class OfflineCache {
     /**
      * Extrae la URL con NewPipe y baja el audio por partes a files/offline/<id>.part. Null si no se pudo; entonces
      * `networkFailure` dice si fue por la red (la canción queda pendiente) o por la canción (falló de verdad).
+     * La música va primero: antes de extraer y de cada parte espera si el reproductor está cargando (yieldToPlayback); si
+     * empieza a cargar a mitad de una parte, la conexión se suelta y esa parte sigue después desde donde iba. Mientras suena
+     * música por internet, baja como mucho a STREAMING_LIMIT (Throttle).
      */
     @Nullable
     private static File fetch(JSONObject track) {
         final String id = track.optString("id");
         final int started = generation;
         networkFailure = false;
+        final BooleanSupplier stop = () -> started != generation || (cancelCurrent && id.equals(current));
+        yieldToPlayback(stop);
+        if (stop.getAsBoolean()) return null; // la cancelaste mientras esperaba
         final StreamResolver.Stream stream;
         try {
-            stream = StreamResolver.resolve(id);
+            stream = StreamResolver.resolveForDownload(id); // aquí mismo, en este hilo de prioridad baja
         } catch (IOException error) {
             networkFailure = isNetworkCause(error) || !canDownload();
             Log.w(TAG, "No se pudo extraer " + id + " para descargarla", error);
@@ -708,12 +825,15 @@ final class OfflineCache {
                 .setAllowCrossProtocolRedirects(true)
                 .createDataSource();
         final byte[] buffer = new byte[64 * 1024];
+        final Throttle throttle = new Throttle();
         long position = 0;
         try (FileOutputStream out = new FileOutputStream(part)) {
             while (declared <= 0 || position < declared) {
-                if (started != generation || (cancelCurrent && id.equals(current))) throw new IOException("Cancelada");
+                yieldToPlayback(stop); // el reproductor está cargando: espera antes de pedir la siguiente parte
+                if (stop.getAsBoolean()) throw new IOException("Cancelada");
                 final long length = declared > 0 ? Math.min(CHUNK, declared - position) : CHUNK;
                 long got = 0;
+                boolean yielded = false; // se soltó la conexión para darle la red al reproductor
                 try {
                     source.open(new DataSpec.Builder().setUri(Uri.parse(stream.audioUrl)).setPosition(position).setLength(length).build());
                     int read;
@@ -721,6 +841,11 @@ final class OfflineCache {
                         out.write(buffer, 0, read);
                         got += read;
                         if (position + got > MAX_BYTES) throw new IOException("Demasiado grande para descargarla");
+                        if (playbackHungry) { // el reproductor empezó a cargar: la parte sigue después, desde aquí
+                            yielded = true;
+                            break;
+                        }
+                        throttle.onRead(read);
                     }
                 } catch (HttpDataSource.InvalidResponseCodeException error) {
                     if (error.responseCode != 416 || position == 0) throw error; // 416: ya no quedaba nada por bajar
@@ -732,7 +857,7 @@ final class OfflineCache {
                     }
                 }
                 position += got;
-                if (got < length) break; // la última parte
+                if (!yielded && got < length) break; // la última parte
             }
         } catch (IOException error) {
             if (!part.delete()) Log.w(TAG, "No se pudo borrar " + part);

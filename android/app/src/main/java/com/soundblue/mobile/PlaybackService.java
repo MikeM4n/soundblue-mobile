@@ -37,6 +37,7 @@ import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.datasource.ResolvingDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
@@ -117,6 +118,15 @@ public final class PlaybackService extends MediaSessionService {
     private static final long MAX_CROSSFADE_MS = 20_000;
     private static final long FADE_TICK_MS = 100; // el volumen de las dos se ajusta 10 veces por segundo
     private static final long FADE_WATCH_MS = 500; // cada cuánto se mira si ya llegó la hora de mezclar
+    // Búfer (2.1.4): cuánto de la canción se guarda en memoria por delante, para aguantar cortes de red (p. ej. mientras se
+    // descarga música). Antes, lo de Media3: 50 s. Ahora entre 90 s y 3 min (unos 3,5 MB en memoria a 160 kbps, por
+    // reproductor). Suena al tener 1 s (como antes) y, tras quedarse sin búfer, al tener 4 s (antes 2): menos tirones seguidos.
+    private static final int MIN_BUFFER_MS = 90_000; // por debajo de esto, sigue cargando…
+    private static final int MAX_BUFFER_MS = 180_000; // …hasta llegar a esto
+    private static final int AFTER_REBUFFER_MS = 4_000;
+    // La música va primero (2.1.4): con menos de 20 s guardados (o cargando), las descargas esperan (OfflineCache).
+    private static final long LOW_BUFFER_MS = 20_000;
+    private static final long PRIORITY_WATCH_MS = 1_000; // cada cuánto se le avisa a las descargas mientras suena
     private static final AudioAttributes AUDIO_ATTRIBUTES = new AudioAttributes.Builder()
             .setUsage(C.USAGE_MEDIA)
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -214,9 +224,16 @@ public final class PlaybackService extends MediaSessionService {
             noFadeFor = leaving == null ? null : leaving.mediaId; // con esta canción no se vuelve a intentar
             cancelFade();
         }
+
+        @Override
+        public void onEvents(Player eventPlayer, Player.Events events) {
+            updateDownloadPriority(); // la que entra está cargando (o ya cargó): las descargas se enteran
+        }
     };
     private final Runnable fadeWatch = this::watchForFade;
     private final Runnable fadeTick = this::fadeStep;
+    private final Runnable priorityWatch = this::updateDownloadPriority;
+    private boolean prefetchPending; // la siguiente se pre-carga cuando la actual ya suena (la actual va primero)
 
     static PlaybackService get() {
         return instance;
@@ -272,6 +289,11 @@ public final class PlaybackService extends MediaSessionService {
     private ExoPlayer buildPlayer(boolean audioFocus) {
         return new ExoPlayer.Builder(this)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(dataSource).setLoadErrorHandlingPolicy(new LoadErrorPolicy()))
+                // Búfer grande para lo que llega por internet (los archivos descargados siguen con lo de Media3).
+                .setLoadControl(new DefaultLoadControl.Builder()
+                        .setBufferDurationsMsForStreaming(MIN_BUFFER_MS, MAX_BUFFER_MS,
+                                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS, AFTER_REBUFFER_MS)
+                        .build())
                 .setAudioAttributes(AUDIO_ATTRIBUTES, audioFocus)
                 // Audífonos o Bluetooth del carro desconectados: pausa (no sigue por el altavoz del celular).
                 .setHandleAudioBecomingNoisy(true)
@@ -310,6 +332,8 @@ public final class PlaybackService extends MediaSessionService {
         main.removeCallbacks(offlineProbe);
         main.removeCallbacks(fadeWatch);
         cancelFade();
+        main.removeCallbacks(priorityWatch);
+        OfflineCache.setPlayback(false, false); // sin reproductor, las descargas van a toda velocidad
         SoundBlueWidgetState.idle(this); // sin servicio no hay nada que controlar: queda la última canción, en pausa
         if (networkCallback != null) {
             final ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
@@ -860,9 +884,17 @@ public final class PlaybackService extends MediaSessionService {
         }
     }
 
-    /** Pre-carga: la URL de la siguiente se extrae mientras suena la actual, así «siguiente» no espera a NewPipe. */
+    /**
+     * Pre-carga: la URL de la siguiente se extrae mientras suena la actual, así «siguiente» no espera a NewPipe. Si la
+     * actual todavía está cargando, espera a que suene (onPlaybackStateChanged): la red y la CPU son primero para ella.
+     */
     private void prefetchNext() {
         if (offline) return; // la caché ya está en el teléfono (y sin internet no hay qué extraer)
+        if (player.getPlaybackState() == Player.STATE_BUFFERING) {
+            prefetchPending = true;
+            return;
+        }
+        prefetchPending = false;
         final int next = player.getNextMediaItemIndex();
         if (next == C.INDEX_UNSET) return;
         final String videoId = player.getMediaItemAt(next).mediaId;
@@ -942,6 +974,44 @@ public final class PlaybackService extends MediaSessionService {
         skippedFailed = videoId;
         player.removeMediaItem(player.getCurrentMediaItemIndex());
         player.prepare();
+    }
+
+    // ---- La música va primero: prioridad sobre las descargas (2.1.4) ----
+
+    /**
+     * Le dice a las descargas (OfflineCache) si suena música por internet (entonces van más despacio) y si el reproductor
+     * necesita la red YA: cargando la canción (o la siguiente, al final) o con menos de 20 s guardados por delante (entonces
+     * esperan). Con la transición suave cuenta también la que está entrando. Se llama en cada cambio del reproductor y,
+     * mientras suena, cada segundo (lo guardado baja sin que haya avisos).
+     */
+    private void updateDownloadPriority() {
+        main.removeCallbacks(priorityWatch);
+        if (instance == null) { // el servicio se está cerrando
+            OfflineCache.setPlayback(false, false);
+            return;
+        }
+        final boolean active = !offline && player.getPlayWhenReady();
+        final boolean mixing = active && fading && spare != null;
+        final boolean streaming = active && (streamsOnline(player) || (mixing && streamsOnline(spare)));
+        final boolean hungry = active && (starving(player) || (mixing && starving(spare)));
+        OfflineCache.setPlayback(streaming, hungry);
+        if (active) main.postDelayed(priorityWatch, PRIORITY_WATCH_MS);
+    }
+
+    /** ¿Este reproductor suena por internet? Las descargadas suenan desde el teléfono: no compiten por la red. */
+    private static boolean streamsOnline(ExoPlayer target) {
+        final MediaItem item = target.getCurrentMediaItem();
+        final int state = target.getPlaybackState();
+        if (item == null || state == Player.STATE_IDLE || state == Player.STATE_ENDED) return false;
+        final Boolean fromFile = FROM_FILE.get(item.mediaId); // lo decide resolve al empezar la canción
+        return fromFile == null ? !OfflineCache.isCached(item.mediaId) : !fromFile;
+    }
+
+    /** ¿Le falta la red ya? Cargando, o bajando más con menos de 20 s guardados por delante. */
+    private static boolean starving(ExoPlayer target) {
+        final int state = target.getPlaybackState();
+        return state == Player.STATE_BUFFERING
+                || (state == Player.STATE_READY && target.isLoading() && target.getTotalBufferedDuration() < LOW_BUFFER_MS);
     }
 
     // ---- Transición suave (crossfade) ----
@@ -1062,6 +1132,7 @@ public final class PlaybackService extends MediaSessionService {
         updateWidget();
         saveQueue();
         if (player.isPlaying()) scheduleFadeWatch();
+        updateDownloadPriority(); // ahora manda el reproductor que entró
     }
 
     /** Deja la mezcla a medias: la que entraba se calla y la que suena vuelve a su volumen (como si no hubiera empezado). */
@@ -1076,6 +1147,7 @@ public final class PlaybackService extends MediaSessionService {
         }
         player.setVolume(userVolume);
         if (player.isPlaying()) scheduleFadeWatch();
+        updateDownloadPriority(); // la que entraba ya no cuenta
     }
 
     // ---- Modo offline ----
@@ -1355,6 +1427,8 @@ public final class PlaybackService extends MediaSessionService {
             notifyState();
             // Se acabó la cola: si la app no manda más enseguida, el servicio sigue solo (con la Fila Dinámica).
             if (playbackState == Player.STATE_ENDED) scheduleExtend(ENDED_GRACE_MS);
+            // La actual ya cargó: ahora sí se pre-carga la siguiente.
+            if (playbackState == Player.STATE_READY && prefetchPending) prefetchNext();
         }
 
         @Override
@@ -1370,6 +1444,7 @@ public final class PlaybackService extends MediaSessionService {
         // Una vez por tanda de cambios (no por cada aviso suelto): el widget muestra lo que suena y si está en pausa.
         @Override
         public void onEvents(Player eventPlayer, Player.Events events) {
+            updateDownloadPriority(); // cargando, sonando, en pausa…: las descargas se enteran al momento
             if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_MEDIA_METADATA_CHANGED,
                     Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_PLAY_WHEN_READY_CHANGED,
                     Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_TIMELINE_CHANGED)) {
