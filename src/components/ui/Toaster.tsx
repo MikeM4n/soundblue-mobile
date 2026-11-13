@@ -12,7 +12,9 @@ export function Toaster() {
   if (!toast) return null
 
   const main = document.querySelector('main')?.getBoundingClientRect()
-  let bottom = main ? window.innerHeight - main.bottom + 12 : 96
+  // + lo que creció la barra inferior con navegación por 3 botones (con gestos mide 70 px: no cambia nada).
+  const navGrowth = Math.max(0, (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-h')) || 0) - 70)
+  let bottom = (main ? window.innerHeight - main.bottom + 12 : 96) + navGrowth
   const toastTop = window.innerHeight - bottom - 56
   if (video && video.top + video.height > toastTop && video.top < window.innerHeight - bottom) {
     bottom = window.innerHeight - video.top + 8

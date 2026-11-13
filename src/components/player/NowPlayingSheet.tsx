@@ -124,7 +124,7 @@ export function NowPlayingSheet() {
 
   if (!current) {
     return (
-      <div className="fixed inset-x-0 top-0 z-40 grid h-dvh w-full place-items-center bg-black p-8 pb-[70px] text-center lg:right-0 lg:bottom-0 lg:left-[236px] lg:h-auto lg:w-auto lg:pb-8 lg:z-50">
+      <div className="fixed inset-x-0 top-0 z-40 grid h-dvh w-full place-items-center bg-black p-8 pb-[var(--nav-h,70px)] text-center lg:right-0 lg:bottom-0 lg:left-[236px] lg:h-auto lg:w-auto lg:pb-8 lg:z-50">
         <div>
           <p className="text-lg font-semibold">No hay nada sonando</p>
           <button type="button" onClick={close} className="mt-2 text-acento-texto hover:underline">
@@ -148,7 +148,7 @@ export function NowPlayingSheet() {
       aria-label="Sonando ahora"
       // En celular cubre toda la pantalla; en PC deja sitio para la barra lateral.
       // siempre-oscuro: va sobre la carátula difuminada, también con el tema claro.
-      className="siempre-oscuro fixed inset-x-0 top-0 z-40 h-dvh w-full touch-none overflow-hidden overscroll-contain bg-black pb-[70px] text-white select-none lg:right-0 lg:bottom-0 lg:left-[236px] lg:h-auto lg:w-auto lg:pb-0 lg:z-50 lg:touch-auto"
+      className="siempre-oscuro fixed inset-x-0 top-0 z-40 h-dvh w-full touch-none overflow-hidden overscroll-contain bg-black pb-[var(--nav-h,70px)] text-white select-none lg:right-0 lg:bottom-0 lg:left-[236px] lg:h-auto lg:w-auto lg:pb-0 lg:z-50 lg:touch-auto"
       style={{ transform: `translateY(${offset})`, transition: dragY === null ? `transform ${SLIDE_MS}ms cubic-bezier(.2,.8,.2,1)` : 'none' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}

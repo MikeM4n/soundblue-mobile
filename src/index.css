@@ -28,6 +28,20 @@
 }
 
 /*
+ * Alto de la barra inferior del celular (Inicio, Buscar, Biblioteca), según env(safe-area-inset-bottom): el espacio que
+ * ocupan abajo los controles del sistema.
+ * - Navegación por gestos (env() de 0 a ~24 px): 70 px, exactamente como siempre (env() va como padding por dentro).
+ * - Navegación por 3 botones (env() ~48 px): crece lo justo para que íconos y textos (~59 px + 4 px de aire) queden
+ *   ENCIMA de los botones Atrás / Inicio / Recientes: env() + 63 px.
+ * El cambio de un caso al otro es en 30 px: (env() − 30px) × 1000 da un número muy negativo con gestos (gana 70 px) y uno
+ * enorme con botones (gana env() + 63 px). El mini reproductor, el contenido, «Sonando ahora» y los avisos se apoyan en
+ * el alto medido de la barra (--nav-h): suben con ella solo cuando hay botones.
+ */
+:root {
+  --nav-total: max(70px, min(calc(env(safe-area-inset-bottom, 0px) + 63px), calc((env(safe-area-inset-bottom, 0px) - 30px) * 1000 + 70px)));
+}
+
+/*
  * Tema claro (Ajustes → Tema, o el teléfono en modo claro con «Predeterminado del sistema»: lo pone data-tema en <html>,
  * ver src/lib/theme.ts). Lo que va sobre la carátula difuminada («Sonando ahora», la mini barra, el panel del PC) lleva
  * la clase siempre-oscuro y conserva la paleta oscura.

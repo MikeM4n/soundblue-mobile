@@ -1,5 +1,13 @@
 # Historial de cambios
 
+## 2026-11-13 — v2.1.2
+
+- Área segura (Safe Area) SOLO para teléfonos con navegación por 3 botones (Atrás, Inicio, Recientes): la barra inferior (Inicio, Buscar, Biblioteca) y el mini reproductor ya no quedan debajo de los botones del sistema. Con navegación por gestos todo queda exactamente igual que en la 2.1.1.
+  - Causa: la barra medía 70 px fijos y `env(safe-area-inset-bottom)` (que ya tenía como padding) se restaba por dentro de esos 70 px. Con gestos (env() de 0 a ~24 px) no se notaba; con 3 botones (~48 px) a los íconos les quedaban 22 px y se salían sobre los botones.
+  - Ahora el alto es `--nav-total` (src/index.css), calculado con `env(safe-area-inset-bottom)`: hasta 30 px (gestos) sigue en 70 px; con más (botones) mide env() + 63 px, para que íconos y textos (~59 px) queden encima de los botones con 4 px de aire. El padding sigue siendo `env(safe-area-inset-bottom)`.
+  - Lo que se apoya en el alto medido de la barra (`--nav-h`) sube con ella solo cuando hay botones: el mini reproductor, el final de las páginas, «Sonando ahora» (antes tenía 70 px fijos), la cola «Próximas en sonar» y los avisos («Deshacer»).
+  - index.html ya tenía `viewport-fit=cover`. La parte nativa no necesita cambios: MainActivity no fuerza el modo borde a borde y Capacitor 8 (SystemBars) aplica los márgenes del sistema.
+
 ## 2026-11-12 — v2.1.1
 
 - Transición suave configurable: en Ajustes → «Reproducción», con «Transición suave (Crossfade)» encendida aparece «Duración de la transición» (menú desplegable): 5, 10 (por defecto), 15 o 20 segundos. Se guarda en localStorage (`crossfadeSeconds`) y en el teléfono (SharedPreferences `crossfade_duration`, en ms). El reproductor nativo usa esa duración para empezar la mezcla y en las fórmulas de volumen (lo que le queda / duración elegida); si la cambias en plena mezcla, se aplica al siguiente ajuste. Las canciones que duran menos del doble de la mezcla no se mezclan.

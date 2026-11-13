@@ -179,7 +179,7 @@ export function QueuePanel({ open, top, onClose }: QueuePanelProps) {
             </button>
           </div>
         </div>
-        <div ref={listRef} className="scroll-fino min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain pb-[calc(env(safe-area-inset-bottom)+12px)]">
+        <div ref={listRef} className="scroll-fino min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain pb-[calc(env(safe-area-inset-bottom)+12px+max(0px,var(--nav-h,70px)-70px))]">
           {open && <div className="queue-pure-black"><QueueSections /></div>}
         </div>
       </section>

@@ -5,6 +5,8 @@ import { libraryNav, mainNav } from './navItems'
 
 /**
  * Barra inferior fija del celular con las tres secciones; permanece visible también en «Sonando ahora».
+ * Alto: --nav-total (index.css). Con gestos, 70 px como siempre; con navegación por 3 botones crece para que los íconos
+ * queden encima de los botones del sistema (pb = env(safe-area-inset-bottom)).
  * Desde aquí, tocar una sección navega sin detener la música.
  */
 export function MobileNav() {
@@ -28,7 +30,7 @@ export function MobileNav() {
     <nav
       ref={ref}
       aria-label="Principal"
-      className="fixed right-0 bottom-0 left-0 z-50 grid h-[70px] shrink-0 grid-cols-3 border-t border-contraste/5 bg-fondo pb-[env(safe-area-inset-bottom)] lg:hidden"
+      className="fixed right-0 bottom-0 left-0 z-50 grid h-[var(--nav-total)] shrink-0 grid-cols-3 border-t border-contraste/5 bg-fondo pb-[env(safe-area-inset-bottom)] lg:hidden"
     >
       {[...mainNav, libraryNav].map(({ to, label, icon: Icon, end }) => (
         <NavLink
