@@ -1,5 +1,9 @@
 # Historial de cambios
 
+## 2026-11-13 — v2.1.3
+
+- El mini reproductor (la barra de la canción que suena, en el celular) queda pegado a la barra inferior (Inicio, Buscar, Biblioteca), sin el espacio de 4 px que lo hacía ver «flotando». Su borde de abajo es exactamente el de arriba de la barra (`--nav-h`), así que sigue subiendo con ella en los teléfonos con botones del sistema (el área segura de la 2.1.2 no cambia). Sus esquinas de abajo quedan rectas para que la unión sea limpia; las de arriba siguen redondeadas. El final de las páginas sigue llegando justo al borde del mini reproductor.
+
 ## 2026-11-13 — v2.1.2
 
 - Área segura (Safe Area) SOLO para teléfonos con navegación por 3 botones (Atrás, Inicio, Recientes): la barra inferior (Inicio, Buscar, Biblioteca) y el mini reproductor ya no quedan debajo de los botones del sistema. Con navegación por gestos todo queda exactamente igual que en la 2.1.1.

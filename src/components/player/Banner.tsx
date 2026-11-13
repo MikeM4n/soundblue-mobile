@@ -25,7 +25,7 @@ export function Banner() {
   useLayoutEffect(() => {
     const banner = bannerRef.current
     if (!banner || !current || sheet !== 'closed') return
-    const updateHeight = () => document.documentElement.style.setProperty('--mobile-player-banner-h', `${banner.offsetHeight + 4}px`)
+    const updateHeight = () => document.documentElement.style.setProperty('--mobile-player-banner-h', `${banner.offsetHeight}px`)
     updateHeight()
     const observer = new ResizeObserver(updateHeight)
     observer.observe(banner)
@@ -43,7 +43,8 @@ export function Banner() {
 
   return (
     // siempre-oscuro: va sobre la carátula difuminada, también con el tema claro.
-    <div ref={bannerRef} className="siempre-oscuro fixed right-2 bottom-[calc(var(--nav-h,70px)+4px)] left-2 z-40 overflow-hidden rounded-lg bg-elevado text-white lg:hidden">
+    // Pegada a la barra inferior (sin espacio entre las dos): su borde de abajo es el de arriba de la barra (--nav-h).
+    <div ref={bannerRef} className="siempre-oscuro fixed right-2 bottom-[var(--nav-h,70px)] left-2 z-40 overflow-hidden rounded-t-lg bg-elevado text-white lg:hidden">
       <Backdrop track={current} variant="barra" />
       <div className="relative flex items-center gap-1 py-2 pr-1 pl-2">
         <BarCarousel onOpen={open} showCover className="h-10 flex-1" />
