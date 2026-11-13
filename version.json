@@ -1,6 +1,6 @@
 {
-  "versionCode": 20101,
-  "versionName": "2.1.1",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.1/SoundBlue.apk",
-  "changelog": "Transición suave a tu medida: en Ajustes → Reproducción, elige cuánto dura la mezcla entre canciones (5, 10, 15 o 20 segundos)."
+  "versionCode": 20102,
+  "versionName": "2.1.2",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.2/SoundBlue.apk",
+  "changelog": "Teléfonos con botones Atrás, Inicio y Recientes: la barra inferior y el mini reproductor ya no quedan debajo de los botones del sistema. Con navegación por gestos todo sigue igual."
 }
