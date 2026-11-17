@@ -1,5 +1,14 @@
 # Historial de cambios
 
+## 2026-11-17 — v2.1.5
+
+- Modos de ambiente (Rumba, Tomar, Relax):
+  - Botones como en la cabecera de una playlist: ▶ redondo (48 px), «Aleatorio» y el nuevo «Actualizar lista» como íconos (antes, un botón ancho de 56 px y una píldora «Aleatorio»).
+  - Carga instantánea: las primeras 20 canciones de cada lista (modo, subfiltro y géneros elegidos) se guardan en el teléfono (`localStorage`, `soundblue:modos-cache`, solo los datos y el videoId) con la hora. Al volver a entrar se muestran al momento y ya se les puede dar ▶; el resto llega en segundo plano y va detrás.
+  - «Actualizar lista» (ícono de refrescar): busca canciones nuevas sin mirar la caché (otro azar en las playlists del modo; las que se veían van al final). Si la lista guardada tiene más de 24 h, hace lo mismo solo, en segundo plano: se sigue viendo y sonando la de antes hasta que llegan las nuevas.
+  - «Canciones por ritmo» (1 a 5, 2 por defecto; se guarda por modo, `soundblue:modos-ritmo`): en «Todo», la lista y la cola van por bloques de cada género en el orden del modo, p. ej. Salsa 1, Salsa 2, Reggaetón 1, Reggaetón 2, Merengue 1, Merengue 2… Si un género se acaba, siguen los demás. El reproductor recibe la cola ya en ese orden (se apaga el aleatorio global para esa lista) y el nativo encadena las próximas en el mismo orden. Si llegan más canciones o cambias el número con la lista sonando, la cola sigue la rotación desde donde iba (`engine.replanContext`). «Aleatorio» mezcla dentro de cada género, empezando por uno al azar, pero respeta la rotación.
+- Nuevo «Modo Mix Personalizado» (Tu biblioteca, arriba): eliges con casillas una o varias de tus playlists (Tus me gusta, Tu Top 50, las tuyas y las guardadas de YouTube) y «Reproducir Mix» pone en la cola SOLO sus canciones, sin repetidas, en aleatorio. No busca nada en YouTube: es una lista cerrada, así que ni la Fila Dinámica ni el reproductor nativo agregan otras canciones al acabarse, y no se piden recomendaciones. La selección se recuerda.
+
 ## 2026-11-13 — v2.1.4
 
 - La música va primero: la reproducción ya no se traba (buffering o pausas) mientras se descargan canciones, también en teléfonos de gama baja. Todo es nativo (Java); la interfaz no cambia.

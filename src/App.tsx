@@ -14,6 +14,7 @@ import { Home } from './pages/Home'
 const Collection = lazy(() => import('./pages/Collection').then((m) => ({ default: m.Collection })))
 const Help = lazy(() => import('./pages/Help').then((m) => ({ default: m.Help })))
 const ModePage = lazy(() => import('./pages/Mode').then((m) => ({ default: m.ModePage })))
+const MixPage = lazy(() => import('./pages/Mix').then((m) => ({ default: m.MixPage })))
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
 const Library = lazy(() => import('./pages/Library').then((m) => ({ default: m.Library })))
 const Onboarding = lazy(() => import('./pages/Onboarding').then((m) => ({ default: m.Onboarding })))
@@ -59,6 +60,7 @@ export default function App() {
           <Route path="ayuda" element={<Help />} />
           <Route path="ajustes" element={<Settings />} />
           <Route path="modo/:modo" element={<ModePage />} />
+          <Route path="mix" element={<MixPage />} />
           <Route path="ytm/:browseId" element={<YtmPage />} />
           <Route path="gustos" element={<Tastes />} />
           <Route path="cancion/:id" element={<SongPage />} />

@@ -228,10 +228,11 @@ export async function sourcePlaylists(source: GenreSource): Promise<YtmCard[]> {
 /**
  * Canciones de un género o subfiltro: las de sus 2 primeras playlists, al azar (el mismo orden en la sesión), filtradas.
  * `onPartial`: con la primera playlist que llega, sin esperar a la otra (carga progresiva de los Modos).
+ * `randomSeed`: otro azar (otras canciones de las mismas playlists), para «Actualizar lista» de un Modo.
  */
-export async function sourceTracks(source: GenreSource, limit = 40, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
+export async function sourceTracks(source: GenreSource, limit = 40, onPartial?: (tracks: Track[]) => void, randomSeed?: number): Promise<Track[]> {
   const playlists = (await sourcePlaylists(source)).slice(0, PLAYLISTS_PER_LIST)
-  const seed = sessionSeed() ^ hashText(source.key + source.queries.join())
+  const seed = (randomSeed ?? sessionSeed()) ^ hashText(source.key + source.queries.join())
   const selected = favoriteGenres.get()
   const index = selected.length ? genreIndex() : null // se pide ya, mientras llegan las playlists
   index?.catch(() => {}) // el error se lee en compose
@@ -263,25 +264,46 @@ export async function prefetchSource(source: GenreSource): Promise<void> {
   await Promise.all(playlists.map((playlist) => ytmPage(playlist.id).catch(() => null)))
 }
 
+/** Una canción de un Modo y el género (subfiltro) del que salió: con él se arma la rotación de ritmos (data/modeRotation.ts). */
+export interface ModeTrack {
+  track: Track
+  genre: string
+}
+
 /**
- * Canciones de un modo: un subfiltro, o todos mezclados («Todo»), sin las de un género que choca con el del modo.
+ * Canciones nuevas para un Modo («Actualizar lista» y la renovación de cada 24 h): `seed`, otro azar (otras canciones de
+ * las mismas playlists); `avoid`, las que ya se mostraban, que van al final (solo entran si no alcanzan las nuevas).
+ */
+export interface FreshOptions {
+  seed?: number
+  avoid?: ReadonlySet<string>
+}
+
+/**
+ * Canciones de un modo: un subfiltro, o todos mezclados («Todo»), sin las de un género que choca con el del modo. Cada
+ * una con su género. La selección va equilibrada entre géneros (una de cada uno, intercaladas); el orden en que suenan lo
+ * decide la rotación de ritmos (data/modeRotation.ts).
  * Carga progresiva (`onPartial`): en cuanto hay al menos 5 se entregan, para poder darle ▶ enseguida, y cada vez que
  * llega otra playlist se entregan más. Lo ya entregado no se mueve ni desaparece: lo nuevo va al final.
  */
-export async function modeTracks(mode: Mode, filterKey: string | null, limit = 50, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
+export async function modeTracks(mode: Mode, filterKey: string | null, limit = 50, onPartial?: (tracks: ModeTrack[]) => void, fresh: FreshOptions = {}): Promise<ModeTrack[]> {
   const sources = filterKey ? mode.filters.filter((f) => f.key === filterKey) : mode.filters
   const selected = favoriteGenres.get()
   const indexes = Promise.all([mode.genres ? genreIndexSoon(INDEX_WAIT_MS) : null, selected.length ? genreIndex().catch(() => null) : null])
   const lists: Track[][] = sources.map(() => [])
+  const genreOf = new Map<string, string>() // de qué género salió cada una (la primera lista donde apareció)
+  const avoid = fresh.avoid
+  const newFirst = (list: Track[]) => (avoid?.size ? [...list.filter((track) => !avoid.has(track.id)), ...list.filter((track) => avoid.has(track.id))] : list)
   let shown: Track[] = []
   let done = false
-  const merge = async () => {
+  const merge = async (): Promise<ModeTrack[]> => {
     const [index, globalIndex] = await indexes
     const scope = genreScope(new Set(mode.genres))
     const fits = (track: Track) => (!index || !clashes(track, index, scope)) && (!selected.length || (!!globalIndex && [...genresOf(track, globalIndex)].some((genre) => selected.includes(genre))))
-    const next = strictFilter(interleave(lists.map((list) => list.filter(fits))), limit)
+    lists.forEach((list, i) => list.forEach((track) => genreOf.has(track.id) || genreOf.set(track.id, sources[i].key)))
+    const next = strictFilter(interleave(lists.map((list) => newFirst(list.filter(fits)))), limit)
     shown = capPerArtist([...shown, ...next]).slice(0, limit) // lo ya entregado queda primero y en su lugar
-    return shown
+    return shown.map((track) => ({ track, genre: genreOf.get(track.id) ?? sources[0].key }))
   }
   const deliver = async () => {
     if (!onPartial || done) return
@@ -293,7 +315,7 @@ export async function modeTracks(mode: Mode, filterKey: string | null, limit = 5
       lists[i] = await tracksForMode(mode, source, limit, (partial) => {
         lists[i] = partial
         void deliver()
-      }).catch(() => lists[i])
+      }, fresh.seed).catch(() => lists[i])
       await deliver()
     }),
   )
@@ -301,17 +323,21 @@ export async function modeTracks(mode: Mode, filterKey: string | null, limit = 5
   return [...(await merge())]
 }
 
-/** Rumba prioriza videos populares; si no hay Data API, falla o no encuentra pistas, usa playlists de YouTube Music. */
-async function tracksForMode(mode: Mode, source: GenreSource, limit: number, onPartial?: (tracks: Track[]) => void): Promise<Track[]> {
+/**
+ * Rumba prioriza videos populares; si no hay Data API, falla o no encuentra pistas, usa playlists de YouTube Music.
+ * `seed` (canciones nuevas): otro azar en las playlists y, en los populares, otro orden (siguen siendo los de +1 millón).
+ */
+async function tracksForMode(mode: Mode, source: GenreSource, limit: number, onPartial?: (tracks: Track[]) => void, seed?: number): Promise<Track[]> {
   const partial = onPartial && ((tracks: Track[]) => onPartial(strictFilter(tracks, limit)))
-  if (mode.key !== 'rumba') return strictFilter(await sourceTracks(source, 40, partial), limit)
+  if (mode.key !== 'rumba') return strictFilter(await sourceTracks(source, 40, partial, seed), limit)
   try {
-    const popular = strictFilter(await youtubePopularTracks(source.queries[0]), limit)
+    const found = await youtubePopularTracks(source.queries[0])
+    const popular = strictFilter(seed === undefined ? found : shuffle(found, seededRandom(seed ^ hashText(source.key))), limit)
     if (popular.length) return popular
   } catch {
     // La API oficial es opcional; el modo sigue con el catálogo normal de YouTube Music.
   }
-  return strictFilter(await sourceTracks(source, 40, partial), limit)
+  return strictFilter(await sourceTracks(source, 40, partial, seed), limit)
 }
 
 /**

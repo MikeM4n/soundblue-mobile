@@ -1,4 +1,4 @@
-import { Heart } from 'lucide-react'
+import { Blend, Heart } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 
@@ -27,6 +27,15 @@ export function FavoritesCover({ className = 'size-12' }: { className?: string }
   return (
     <span className={`grid shrink-0 place-items-center rounded-md bg-linear-135 from-acento to-indigo-800 ${className}`}>
       <Heart className="size-1/3 fill-white text-white" aria-hidden="true" />
+    </span>
+  )
+}
+
+/** Portada del «Modo Mix Personalizado»: degradado violeta con dos círculos que se mezclan. */
+export function MixCover({ className = 'size-12' }: { className?: string }) {
+  return (
+    <span className={`grid shrink-0 place-items-center rounded-md bg-linear-135 from-violet-500 to-acento ${className}`}>
+      <Blend className="size-1/2 text-white" aria-hidden="true" />
     </span>
   )
 }

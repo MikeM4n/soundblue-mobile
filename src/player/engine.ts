@@ -55,6 +55,7 @@ interface Context {
   tracks: Track[]
   groups?: Record<string, QueueGroup> // las que agregó la radio, por id: su bloque en «Próximas en sonar»
   genres?: GenreKey[] // lista de un Modo: su radio es de estos géneros (PlayOptions)
+  closed?: boolean // suenan solo sus canciones: sin Fila Dinámica ni recomendaciones (PlayOptions)
 }
 
 /** Una canción que ya sonó, con lo necesario para volver a ella con «anterior». */
@@ -67,10 +68,15 @@ interface Step {
 /**
  * `replaceQueue`: lo que tocas reemplaza tu cola (Inicio). `genres`: la lista es de un Modo (Tomar): las
  * recomendaciones que siguen son solo de esos géneros, con los artistas de la lista como del género.
+ * `ordered`: la lista suena en SU orden (la rotación de ritmos de un Modo): se apaga el aleatorio.
+ * `closed`: suenan solo las canciones de la lista (Modo Mix): ni la Fila Dinámica ni el reproductor nativo agregan otras
+ * al acabarse, y no se buscan recomendaciones.
  */
 export interface PlayOptions {
   replaceQueue?: boolean
   genres?: readonly GenreKey[]
+  ordered?: boolean
+  closed?: boolean
 }
 
 const HISTORY_LIMIT = 50
@@ -279,6 +285,46 @@ export class PlayerEngine {
   }
 
   /**
+   * Una lista con orden propio que se sigue cargando o cambia mientras suena (Modos: la rotación de ritmos). `plan` recibe
+   * las de la lista que ya sonaron (la actual al final) y devuelve las que siguen, en orden: reemplazan lo que faltaba de
+   * la lista, antes de lo que agregó la Fila Dinámica (las que faltaban y el plan no trae van después, no se pierden). Sin
+   * repetidas: lo que ya sonó, la que suena y tu cola no vuelven. Solo si sigue sonando esa lista (`id`). Si activaste el
+   * aleatorio, lo nuevo entra al azar (appendToContext). Devuelve cuántas quedan por sonar del plan.
+   */
+  replanContext(id: number, plan: (played: readonly Track[]) => readonly Track[]): number {
+    const context = this.context
+    if (!context || !id || id !== this.contextId) return 0
+    const groups = context.groups ?? {}
+    const behind = this.order.slice(0, this.pos + 1).map((i) => context.tracks[i])
+    const proposed = plan(behind.filter((track) => !groups[track.id]))
+    if (this.shuffle) return this.appendToContext(id, proposed)
+    const blocked = new Set([...behind.map((track) => track.id), ...this.queue.map((track) => track.id)])
+    if (this.current) blocked.add(this.current.id)
+    const indexOf = new Map<string, number>()
+    context.tracks.forEach((track, i) => indexOf.has(track.id) || indexOf.set(track.id, i))
+    const next: number[] = []
+    for (const track of proposed) {
+      if (blocked.has(track.id) || groups[track.id]) continue // ya sonó, está en tu cola o la trajo la radio
+      blocked.add(track.id)
+      let index = indexOf.get(track.id)
+      if (index === undefined) {
+        index = context.tracks.push(track) - 1
+        indexOf.set(track.id, index)
+      }
+      next.push(index)
+    }
+    const upcoming = this.order.slice(this.pos + 1)
+    const left = upcoming.filter((i) => !groups[context.tracks[i].id] && !blocked.has(context.tracks[i].id))
+    const radio = upcoming.filter((i) => groups[context.tracks[i].id])
+    const order = [...this.order.slice(0, this.pos + 1), ...next, ...left, ...radio]
+    if (order.length !== this.order.length || order.some((i, at) => i !== this.order[at])) {
+      this.order = order
+      this.changed()
+    }
+    return next.length
+  }
+
+  /**
    * Radio (data/radio.ts): suena `seed` y lo que dé `more` llena «Recomendadas» y «Por Descubrir»; con la Fila Dinámica,
    * la cola se completa desde ahí hasta tener 10 por sonar, y se rellena a medida que suenan o las quitas. Nunca entra
    * una canción que ya esté en la lista o en tu cola.
@@ -288,8 +334,9 @@ export class PlayerEngine {
   }
 
   // `radio`: la lista es una radio; se pone antes de sonar para que las pestañas las llene ella y no una nueva.
-  private startContext(name: string, tracks: readonly Track[], start: number, { replaceQueue = false, genres }: PlayOptions, radio: RadioSource | null): boolean {
+  private startContext(name: string, tracks: readonly Track[], start: number, { replaceQueue = false, genres, ordered, closed }: PlayOptions, radio: RadioSource | null): boolean {
     if (!tracks.length) return false
+    if (ordered) this.shuffle = false // la lista trae su orden (rotación de ritmos): no se baraja
     const chosen = tracks[clamp(start, 0, tracks.length - 1)]
     if (radio) this.startRecommendations(chosen, radio)
     else this.stopRecommendations() // al sonar, extendRadio arma la radio de la elegida
@@ -306,7 +353,7 @@ export class PlayerEngine {
       return true
     })
     const first = list.findIndex((track) => track.id === chosen.id)
-    this.context = { name, tracks: list, genres: genres?.length ? [...genres] : undefined }
+    this.context = { name, tracks: list, genres: genres?.length ? [...genres] : undefined, closed: closed || undefined }
     this.contextId++
     this.history = [] // «anterior» se mueve dentro de la nueva lista
     if (this.shuffle) {
@@ -331,6 +378,7 @@ export class PlayerEngine {
   private extendRadio(): Promise<void> {
     const context = this.context
     const seed = this.current
+    if (context?.closed) return Promise.resolve() // Modo Mix: solo sus canciones, nada de radio
     // Suena una que la radio no trajo: las recomendaciones que venían (de otra canción) se cambian por las de esta.
     if (context && seed && this.repeat === 'off' && !this.radioOwn.has(seed.id)) {
       this.restartRadio(seed)
@@ -367,7 +415,7 @@ export class PlayerEngine {
    */
   private topUp() {
     const context = this.context
-    if (!context || !this.current || !settings.get().dynamicQueue) return
+    if (!context || context.closed || !this.current || !settings.get().dynamicQueue) return
     const added: RadioPick[] = []
     for (let remaining = this.upcomingCount(); remaining < MIN_UPCOMING; remaining++) {
       const kind = RECS_KINDS.find((k) => this.pools[k].length)
@@ -481,7 +529,7 @@ export class PlayerEngine {
   ensureRecommendations() {
     const context = this.context
     const seed = this.current
-    if (this.radioMore || !context || !seed || this.repeat !== 'off') return
+    if (this.radioMore || !context || context.closed || !seed || this.repeat !== 'off') return
     this.startRecommendations(seed, this.radioFor(seed, context))
     for (const id of Object.keys(context.groups ?? {})) this.radioOwn.add(id) // lo que ya agregó la Fila Dinámica sigue
     void this.fillPools()
@@ -771,7 +819,7 @@ export class PlayerEngine {
    */
   private restartRadio(seed: Track) {
     const context = this.context
-    if (!context || this.repeat !== 'off') return
+    if (!context || context.closed || this.repeat !== 'off') return
     const groups = context.groups ?? {}
     this.order = [...this.order.slice(0, this.pos + 1), ...this.order.slice(this.pos + 1).filter((i) => !groups[context.tracks[i].id])]
     this.startRecommendations(seed, this.radioFor(seed, context))
@@ -1011,7 +1059,7 @@ export class PlayerEngine {
     }
     const previous = this.peekPrevious()
     const history = this.history.length ? this.history.slice(-NATIVE_BEHIND).map((step) => step.track) : previous ? [previous.track] : []
-    const endless = settings.get().dynamicQueue && this.repeat === 'off'
+    const endless = settings.get().dynamicQueue && this.repeat === 'off' && !this.context?.closed // Modo Mix: se acaba con su lista
     return { history, upcoming, album: this.context?.name, endless }
   }
 
@@ -1267,6 +1315,7 @@ export class PlayerEngine {
           tracks,
           groups: groups && typeof groups === 'object' ? groups : undefined,
           genres: genres.length ? genres : undefined,
+          closed: saved.context.closed === true || undefined,
         }
         // Si se descartaron canciones (las de la fuente retirada), el orden guardado ya no corresponde: se empieza la lista.
         const sameList = tracks.length === saveds.length

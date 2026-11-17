@@ -4,9 +4,10 @@ import { Link } from 'react-router'
 import { ImportButton, ImportPlaylistDialog } from '../components/library/ImportPlaylistDialog'
 import { LibraryList, SavedItems, useCreatePlaylist } from '../components/library/LibraryList'
 import { IconButton } from '../components/ui/IconButton'
+import { LibraryItem, MixCover } from '../components/ui/LibraryItem'
 import { useLibrary } from '../library/store'
 
-/** Biblioteca personal: favoritos y playlists guardadas. */
+/** Biblioteca personal: favoritos y playlists guardadas. Arriba, el «Modo Mix Personalizado» (mezclar tus playlists). */
 export function Library() {
   const createPlaylist = useCreatePlaylist()
   const [importing, setImporting] = useState(false)
@@ -27,6 +28,9 @@ export function Library() {
         <ImportButton onClick={() => setImporting(true)} />
       </div>
       <div className="mt-4">
+        <LibraryItem to="/mix" title="Modo Mix Personalizado" subtitle="Mezcla tus playlists en aleatorio" cover={<MixCover className="size-16" />} />
+      </div>
+      <div className="mt-1">
         <LibraryList coverSize="size-16" saved={false} />
       </div>
       <section aria-labelledby="playlists-guardadas" className="mt-6">

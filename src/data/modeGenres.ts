@@ -51,3 +51,52 @@ export const modeGenres = {
 }
 
 export const useModeGenres = () => useSyncExternalStore(modeGenres.subscribe, modeGenres.get)
+
+// «Canciones por ritmo» de cada modo (2.1.5): cuántas seguidas de cada género antes de pasar al siguiente en su cola
+// (data/modeRotation.ts). De 1 a 5; 2 por defecto. Se guarda en este navegador.
+const RHYTHM_KEY = 'soundblue:modos-ritmo'
+export const RHYTHM_OPTIONS = [1, 2, 3, 4, 5] as const
+export const DEFAULT_RHYTHM = 2
+const rhythmListeners = new Set<() => void>()
+
+type Rhythms = Partial<Record<Mode['key'], number>>
+
+const validRhythm = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 5
+
+function readRhythms(): Rhythms {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(RHYTHM_KEY) ?? '{}')
+    if (!value || typeof value !== 'object') return {}
+    const saved: Rhythms = {}
+    for (const mode of MODES) {
+      const n = (value as Record<string, unknown>)[mode.key]
+      if (validRhythm(n)) saved[mode.key] = n
+    }
+    return saved
+  } catch {
+    return {}
+  }
+}
+
+let rhythms = readRhythms()
+
+export const modeRhythm = {
+  get: () => rhythms,
+  of: (mode: Mode, saved: Rhythms = rhythms): number => saved[mode.key] ?? DEFAULT_RHYTHM,
+  set(mode: Mode, value: number) {
+    if (!validRhythm(value) || rhythms[mode.key] === value) return
+    rhythms = { ...rhythms, [mode.key]: value }
+    try {
+      localStorage.setItem(RHYTHM_KEY, JSON.stringify(rhythms))
+    } catch {
+      /* almacenamiento bloqueado: vale mientras la app esté abierta */
+    }
+    rhythmListeners.forEach((listener) => listener())
+  },
+  subscribe(listener: () => void) {
+    rhythmListeners.add(listener)
+    return () => rhythmListeners.delete(listener)
+  },
+}
+
+export const useModeRhythm = () => useSyncExternalStore(modeRhythm.subscribe, modeRhythm.get)
