@@ -1,6 +1,6 @@
 {
-  "versionCode": 20104,
-  "versionName": "2.1.4",
-  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.4/SoundBlue.apk",
-  "changelog": "La música va primero: la reproducción ya no se traba mientras descargas canciones (búfer más grande y descargas que ceden la red al reproductor)."
+  "versionCode": 20105,
+  "versionName": "2.1.5",
+  "apkUrl": "https://github.com/MikeM4n/soundblue-mobile/releases/download/v2.1.5/SoundBlue.apk",
+  "changelog": "Modos al instante (caché de 24 h y botón Actualizar), «Canciones por ritmo» para intercalar géneros y el nuevo Modo Mix Personalizado en Tu biblioteca."
 }
